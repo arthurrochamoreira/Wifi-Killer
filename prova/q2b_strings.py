@@ -19,13 +19,14 @@
 #
 # Use as mesmas regras do Lox para a definição de variáveis.
 from lark import Lark, Transformer, v_args
+import re
 
 # Modifique a gramática abaixo para que ela reconheça strings com variáveis
 grammar = r"""
-string    : QUOTE NON_QUOTE* QUOTE
+string    : QUOTE CONTENT? QUOTE
 
+CONTENT   : /[^"]+/
 QUOTE     : /"/
-NON_QUOTE : /[^"]/
 """
 
 
@@ -39,10 +40,26 @@ class StringTransformer(Transformer):
         self.vars = vars
         super().__init__()
 
-    def string(self, *args):
-        return "..."  # implemente o transformer aqui!
-
-
+    def string(self, open_quote, content=None, close_quote=None):
+        content = str(content) if content is not None else ""
+        result = []
+        i = 0
+        while i < len(content):
+            ch = content[i]
+            if ch == "$":
+                if i + 1 < len(content) and content[i + 1] == "$":
+                    result.append("$")
+                    i += 2
+                    continue
+                match = re.match(r"\$\{([a-z_]\w*)\}", content[i:])
+                if match:
+                    var_name = match.group(1)
+                    result.append(self.vars.get(var_name, ""))
+                    i += len(match.group(0))
+                    continue
+            result.append(ch)
+            i += 1
+        return "".join(result)
 # Não modifique essa função!
 def parse(st: str, vars: dict, show_tree=False):
     """

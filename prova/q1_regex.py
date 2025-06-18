@@ -14,28 +14,28 @@ from lox.tools.q1_regex import grade_all
 #
 # Vamos considerar por enquanto que a string vazia corresponde ao zero, ainda
 # que esse número não exista no sistema de numeração romano.
-Q1a: str = r"(I|II|III|IV|V|VI|VII|VIII|IX)?"
+Q1a: str = r"IX|IV|V?I{,3}"
 
 # [Q1b; 1pts]
 # Modifique a expressão anterior para que a string vazia seja rejeitada. Note
 # como a resposta ficou mais complicada!
-Q1b: str = r"..."
+Q1b: str = r"IX|IV|V?I{1,3}|V"
 
 # [Q1c; 0.5pts]
 # Podemos simplificar a expressão anterior utilizando o operador de lookahead.
 # Basta adicionar o lookahead positivo `(?=.)` antes da expressão em Q1a
 # para garantir que a string possua pelo menos um caractere.
-Q1c: str = r"(?=.)..."
+Q1c: str = r"(?=.)(IX|IV|V?I{,3})"
 
 # [Q1c; 0.5pts]
 # Podemos facilmente criar uma expressão que lida com as dezenas simplesmente
 # trocando I por X, V por L e X por C na expressão Q1a. Crie uma expressão deste
 # tipo para reconhecer dezenas exatas entre X e XC.
-Q1d: str = r"..."
+Q1d: str = r"XC|XL|L?X{,3}"
 
 # [Q1c; 0.5pt]
 # Agora, faça a mesma coisa para as centenas, trocando X por C, L por D e C por M.
-Q1e: str = r"..."
+Q1e: str = r"CM|CD|D?C{,3}"
 
 # [Q1f; 2.5pts]
 # Finalmente, podemos juntar as expressões anteriores para reconhecer números
@@ -45,7 +45,7 @@ Q1e: str = r"..."
 #
 # Lembre-se de incluir o lookahead positivo `(?=.)` para garantir que a string
 # possua pelo menos um caractere.
-Q1f: str = r"..."
+Q1f: str = r"(?=.)M{,3}(CM|CD|D?C{,3})(XC|XL|L?X{,3})(IX|IV|V?I{,3})"
 
 
 # O comando abaixo executa a correção automática

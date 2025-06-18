@@ -10,7 +10,7 @@ from typing import Iterator
 
 from lark import Lark, Token, Tree
 
-from .ast import Expr, Node, Program
+from .ast import Expr, Program
 from .transformer import LoxTransformer
 
 DIR = Path(__file__).parent
@@ -43,7 +43,7 @@ def parse(src: str) -> Program:
             Código fonte a ser analisado.
     """
     tree = ast_parser.parse(src, start="start")
-    assert isinstance(tree, Program), f"Esperava um Program, mas recebi {tree}"
+    assert isinstance(tree, Program), f"Esperava um Program, mas recebi {type(tree)}"
     tree.validate_tree()
     tree.desugar_tree()
     return tree
@@ -71,7 +71,7 @@ def parse_expr(src: str) -> Expr:
         7
     """
     tree = ast_parser.parse(src, start="expr")
-    assert isinstance(tree, Node), f"Esperava uma Expr, mas recebi {tree}"
+    assert isinstance(tree, Expr), f"Esperava um Expr, mas recebi {type(tree)}"
     tree.validate_tree()
     tree.desugar_tree()
     return tree

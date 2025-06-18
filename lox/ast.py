@@ -1,8 +1,8 @@
 from abc import ABC
 from dataclasses import dataclass
 from typing import Callable
-
 from .ctx import Ctx
+from .runtime import LoxFunction, LoxReturn, truthy
 
 # Declaramos nossa classe base num módulo separado para esconder um pouco de
 # Python relativamente avançado de quem não se interessar pelo assunto.
@@ -11,6 +11,7 @@ from .ctx import Ctx
 # legível. Também possui funcionalidades para navegar na árvore usando cursores
 # e métodos de visitação.
 from .node import Node
+
 
 #
 # TIPOS BÁSICOS
@@ -109,29 +110,29 @@ class Literal(Expr):
 
 @dataclass
 class And(Expr):
-    """
-    Uma operação infixa com dois operandos.
+    """Operador lógico 'and' com curto-circuito."""
 
-    Ex.: x and y
-    """
+    left: Expr
+    right: Expr
 
+    def eval(self, ctx: Ctx):
+        left_value = self.left.eval(ctx)
+        if not truthy(left_value):
+            return left_value
+        return self.right.eval(ctx)
 
 @dataclass
 class Or(Expr):
-    """
-    Uma operação infixa com dois operandos.
-    Ex.: x or y
-    """
+    """Operador lógico 'or' com curto-circuito."""
 
+    left: Expr
+    right: Expr
 
-@dataclass
-class UnaryOp(Expr):
-    """
-    Uma operação prefixa com um operando.
-
-    Ex.: -x, !x
-    """
-
+    def eval(self, ctx: Ctx):
+        left_value = self.left.eval(ctx)
+        if truthy(left_value):
+            return left_value
+        return self.right.eval(ctx)
 
 @dataclass
 class Call(Expr):
@@ -141,18 +142,15 @@ class Call(Expr):
     Ex.: fat(42)
     """
 
-    name: str
+    callee: Expr
     params: list[Expr]
 
     def eval(self, ctx: Ctx):
-        func = ctx[self.name]
-        params = []
-        for param in self.params:
-            params.append(param.eval(ctx))
-
+        func = self.callee.eval(ctx)
+        args = [p.eval(ctx) for p in self.params]
         if callable(func):
-            return func(*params)
-        raise TypeError(f"{self.name} não é uma função!")
+            return func(*args)
+        raise TypeError(f"{func!r} não é chamável")
 
 
 @dataclass
@@ -180,7 +178,15 @@ class Assign(Expr):
 
     Ex.: x = 42
     """
+    name: str
+    value: Expr
 
+    def eval(self, ctx: Ctx):
+        result = self.value.eval(ctx)
+        if self.name[:1] in "ijklmn":
+            result = int(result)
+        ctx.assign(self.name, result)
+        return result
 
 @dataclass
 class Getattr(Expr):
@@ -190,14 +196,26 @@ class Getattr(Expr):
     Ex.: x.y
     """
 
+    obj: Expr
+    attr: str
+
+    def eval(self, ctx: Ctx):
+        value = self.obj.eval(ctx)
+        return getattr(value, self.attr)
 
 @dataclass
 class Setattr(Expr):
-    """
-    Atribuição de atributo de um objeto.
+    obj: Expr
+    attr: str
+    value: Expr
 
-    Ex.: x.y = 42
-    """
+    def eval(self, ctx: Ctx):
+        obj_value = self.obj.eval(ctx)
+        result = self.value.eval(ctx)
+        if self.attr[:1] in "ijklmn":
+            result = int(result)
+        setattr(obj_value, self.attr, result)
+        return result
 
 
 #
@@ -210,9 +228,8 @@ class Print(Stmt):
 
     Ex.: print "Hello, world!";
     """
-
     expr: Expr
-
+    
     def eval(self, ctx: Ctx):
         value = self.expr.eval(ctx)
         print(value)
@@ -220,67 +237,87 @@ class Print(Stmt):
 
 @dataclass
 class Return(Stmt):
-    """
-    Representa uma instrução de retorno.
+    value: Expr | None = None
 
-    Ex.: return x;
-    """
-
+    def eval(self, ctx: Ctx):
+        result = None if self.value is None else self.value.eval(ctx)
+        raise LoxReturn(result)
 
 @dataclass
 class VarDef(Stmt):
-    """
-    Representa uma declaração de variável.
+    name: str
+    value: Expr
 
-    Ex.: var x = 42;
-    """
-
+    def eval(self, ctx: Ctx):
+        result = self.value.eval(ctx)
+        if self.name[:1] in "ijklmn":
+            result = int(result)
+        ctx.var_def(self.name, result)
 
 @dataclass
 class If(Stmt):
-    """
-    Representa uma instrução condicional.
+    cond: Expr
+    then_branch: Stmt
+    else_branch: Stmt | None = None
 
-    Ex.: if (x > 0) { ... } else { ... }
-    """
-
-
-@dataclass
-class For(Stmt):
-    """
-    Representa um laço de repetição.
-
-    Ex.: for (var i = 0; i < 10; i++) { ... }
-    """
-
-
+    def eval(self, ctx: Ctx):
+        if truthy(self.cond.eval(ctx)):
+            self.then_branch.eval(ctx)
+        elif self.else_branch is not None:
+            self.else_branch.eval(ctx)
 @dataclass
 class While(Stmt):
-    """
-    Representa um laço de repetição.
+    cond: Expr
+    body: Stmt
 
-    Ex.: while (x > 0) { ... }
-    """
+    def eval(self, ctx: Ctx):
+        while truthy(self.cond.eval(ctx)):
+            self.body.eval(ctx)
 
 
 @dataclass
 class Block(Node):
-    """
-    Representa bloco de comandos.
+    stmts: list[Stmt]
 
-    Ex.: { var x = 42; print x;  }
-    """
+    def eval(self, ctx: Ctx):
+        ctx.push({})
+        try:
+            for stmt in self.stmts:
+                stmt.eval(ctx)
+        finally:
+            ctx.pop()
+
+@dataclass
+class BlockExpr(Expr):
+    decls: list[Stmt]
+    value: Expr
+
+    def eval(self, ctx: Ctx):
+        ctx.push({})
+        try:
+            for decl in self.decls:
+                decl.eval(ctx)
+            return self.value.eval(ctx)
+        finally:
+            ctx.pop()
+
 
 
 @dataclass
 class Function(Stmt):
-    """
-    Representa uma função.
+    name: str
+    params: list[str]
+    body: Block
 
-    Ex.: fun f(x, y) { ... }
-    """
-
-
+    def eval(self, ctx: Ctx):
+        func = LoxFunction(
+            name=self.name,
+            params=self.params,
+            body=self.body.stmts,
+            ctx=ctx,
+        )
+        ctx.var_def(self.name, func)
+        return func
 @dataclass
 class Class(Stmt):
     """
@@ -288,3 +325,11 @@ class Class(Stmt):
 
     Ex.: class B < A { ... }
     """
+
+@dataclass
+class UnaryOp(Expr):
+    op: Callable[[Value], Value]
+    operand: Expr
+
+    def eval(self, ctx: Ctx):
+        return self.op(self.operand.eval(ctx))

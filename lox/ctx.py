@@ -53,15 +53,11 @@ class Ctx:
         """
         Obtém o valor de uma variável pelo nome.
         """
-        this = self
-        while True:
-            try:
-                return this.scope[name]
-            except KeyError:
-                pass
-            if this.parent is None:
-                raise KeyError(f"Variable '{name}' not found in context.")
-            this = this.parent
+        if name in self.scope:
+            return self.scope[name]
+        elif self.parent is not None:
+            return self.parent[name]
+        raise KeyError(f"Variable '{name}' not found in context.")
 
     def __setitem__(self, name: str, value: "Value") -> None:
         """
@@ -80,15 +76,6 @@ class Ctx:
         """
         return name in self.scope or (self.parent is not None and name in self.parent)
 
-    def __repr__(self) -> str:
-        scopes = [*self.iter_scopes()]
-        scopes.pop()
-        out: dict[str, Value] = {}
-        while scopes:
-            scope = scopes.pop()
-            out.update(scope)
-        return f"Ctx({out})"
-
     def var_def(self, name: str, value: "Value") -> None:
         """
         Define uma variável no contexto atual.
@@ -96,6 +83,16 @@ class Ctx:
         if name in self.scope and not self.is_global():
             raise KeyError(f"Variable '{name}' already defined in the current scope.")
         self.scope[name] = value
+
+    def assign(self, key: str, value: "Value"):
+        """Encontra a ocorrência mais próxima de ``key`` e atualiza seu valor."""
+        ctx: Optional[Ctx] = self
+        while ctx is not None:
+            if key in ctx.scope:
+                ctx.scope[key] = value
+                return
+            ctx = ctx.parent
+        raise KeyError(f"Variable '{key}' not found in context.")
 
     def to_dict(self) -> ScopeDict:
         """
@@ -128,19 +125,22 @@ class Ctx:
             lines.append(pretty_scope(scope, i))
         return "\n".join(reversed(lines))
 
-    def pop(self) -> tuple[ScopeDict, "Ctx"]:
+    def pop(self) -> ScopeDict:
         """
         Remove o escopo mais interno e retorna o contexto atualizado.
         """
         if self.parent is None:
             raise RuntimeError("Cannot pop the global scope.")
-        return self.scope, self.parent
 
-    def push(self, env: ScopeDict) -> "Ctx":
-        """
-        Empilha um novo escopo no contexto atual.
-        """
-        return Ctx(env, self)
+        scope = self.scope
+        self.scope = self.parent.scope
+        self.parent = self.parent.parent
+        return scope
+
+    def push(self, tos: ScopeDict):
+        """Adiciona um dicionário ao topo da pilha."""
+        self.parent = Ctx(self.scope, self.parent)
+        self.scope = tos
 
     def is_global(self) -> bool:
         """
