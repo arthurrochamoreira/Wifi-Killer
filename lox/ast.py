@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Callable
 from .ctx import Ctx
 from .runtime import LoxFunction, LoxReturn, truthy
+from .runtime import LoxFunction, LoxCommand, LoxReturn, truthy
 
 # Declaramos nossa classe base num módulo separado para esconder um pouco de
 # Python relativamente avançado de quem não se interessar pelo assunto.
@@ -91,6 +92,21 @@ class Var(Expr):
             return ctx[self.name]
         except KeyError:
             raise NameError(f"variável {self.name} não existe!")
+        
+@dataclass
+class VarBang(Expr):
+    """Variável acessada em contexto dinâmico"""
+
+    name: str
+
+    def eval(self, ctx: Ctx):
+        key = self.name
+        if "!" in ctx and key in ctx["!"]:
+            return ctx["!"][key]
+        try:
+            return ctx[key]
+        except KeyError:
+            raise NameError(f"variável {self.name} não existe!")
 
 
 @dataclass
@@ -134,6 +150,7 @@ class Or(Expr):
             return left_value
         return self.right.eval(ctx)
 
+
 @dataclass
 class Call(Expr):
     """
@@ -149,9 +166,10 @@ class Call(Expr):
         func = self.callee.eval(ctx)
         args = [p.eval(ctx) for p in self.params]
         if callable(func):
+            if isinstance(func, LoxCommand):
+                return func(ctx, *args)
             return func(*args)
         raise TypeError(f"{func!r} não é chamável")
-
 
 @dataclass
 class This(Expr):
@@ -160,7 +178,6 @@ class This(Expr):
 
     Ex.: this
     """
-
 
 @dataclass
 class Super(Expr):
@@ -187,6 +204,7 @@ class Assign(Expr):
             result = int(result)
         ctx.assign(self.name, result)
         return result
+
 
 @dataclass
 class Getattr(Expr):
@@ -311,6 +329,24 @@ class Function(Stmt):
 
     def eval(self, ctx: Ctx):
         func = LoxFunction(
+            name=self.name,
+            params=self.params,
+            body=self.body.stmts,
+            ctx=ctx,
+        )
+        ctx.var_def(self.name, func)
+        return func
+    
+@dataclass
+class Command(Stmt):
+    """Declaração de comando (função com escopo dinâmico)."""
+
+    name: str
+    params: list[str]
+    body: Block
+
+    def eval(self, ctx: Ctx):
+        func = LoxCommand(
             name=self.name,
             params=self.params,
             body=self.body.stmts,

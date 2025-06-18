@@ -4,6 +4,7 @@ program    : declaration*
 
 ?declaration: var_decl
             | function_decl
+            | command
             | stmt
 
 ?stmt      : expr_stmt
@@ -37,6 +38,7 @@ expr_stmt  : expr ";"
 
 var_decl   : "var" VAR ("=" expr)? ";"
 function_decl: "fun" VAR "(" param_list? ")" block    -> function
+command       : "fun" VAR_BANG "(" param_list? ")" block
 param_list  : VAR ("," VAR)*
 return_cmd  : "return" expr? ";"    -> return_cmd
 
@@ -86,6 +88,7 @@ call_suffix: "(" params ")"   -> args
 ?primary   : NUMBER
            | BOOL
            | VAR
+           | VAR_BANG
            | STRING
            | NIL
            | "(" expr ")"
@@ -95,7 +98,8 @@ params     : [ expr ("," expr )* ]
 
 BOOL.2     : "true" | "false"
 VAR.1      : /[a-z_]\w*/
-NUMBER     : /([1-9][0-9]*|0)(\.[0-9]+)?/ 
+VAR_BANG.2 : VAR "!"
+NUMBER     : /([1-9][0-9]*|0)(\.[0-9]+)?/
 STRING     : /"[^"]*"/
 NIL.2      : "nil"
 COMMENT    : "//" /[^\n]*/

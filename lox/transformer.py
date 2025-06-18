@@ -77,6 +77,16 @@ class LoxTransformer(Transformer):
     # Comandos
     def print_cmd(self, expr):
         return Print(expr)
+
+    def command(self, name: VarBang, *rest):
+        if len(rest) == 1:
+            params: list[str] | None = None
+            body = rest[0]
+        else:
+            params, body = rest  # type: ignore[misc]
+
+        param_names = params or []
+        return Command(name=name.name, params=param_names, body=body)
     
 
     def block(self, *stmts):
@@ -101,9 +111,17 @@ class LoxTransformer(Transformer):
     def VAR(self, token):
         name = str(token)
         return Var(name)
-
+    
+    def VAR_BANG(self, token):
+        name = str(token)
+        return VarBang(name)
+    
     def NUMBER(self, token):
-        num = float(token)
+        text = str(token)
+        if '.' in text:
+            num: float | int = float(text)
+        else:
+            num = int(text)
         return Literal(num)
     
     def STRING(self, token):

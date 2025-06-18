@@ -55,6 +55,31 @@ class LoxFunction:
 
     def __call__(self, *args):
         return self.call(list(args))
+    
+
+@dataclass
+class LoxCommand:
+    """Representa um comando Lox com escopo dinâmico."""
+
+    name: str
+    params: list[str]
+    body: list["Stmt"]
+    ctx: Ctx
+
+    def call(self, ctx_runtime: Ctx, args: list["Value"]):
+        env = dict(zip(self.params, args, strict=True))
+        self.ctx.push(env)
+        self.ctx.var_def("!", ctx_runtime)
+        try:
+            for stmt in self.body:
+                stmt.eval(self.ctx)
+        except LoxReturn as e:
+            return e.value
+        finally:
+            self.ctx.pop()
+
+    def __call__(self, ctx_runtime: Ctx, *args):
+        return self.call(ctx_runtime, list(args))
 class LoxReturn(Exception):
     """
     Exceção para retornar de uma função Lox.
@@ -63,7 +88,6 @@ class LoxReturn(Exception):
     def __init__(self, value):
         self.value = value
         super().__init__()
-
 
 class LoxError(Exception):
     """
