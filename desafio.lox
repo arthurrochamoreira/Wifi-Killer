@@ -1,0 +1,21 @@
+// Programa exemplo para o desafio da prova 2
+fun show!(x) {
+    print x;
+}
+
+fun show_person!(name, age) {
+   show!("nome: ");
+   show!(name);
+   show!("idade: ");
+   show!(age);
+}
+
+{
+   var silent! = false;
+   show_person!("Maria", 20);  // Mostra maria
+}
+
+{
+   fun show!(x) {}
+   show_person!("João", 18);  // Nada acontece
+}

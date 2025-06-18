@@ -1,0 +1,5 @@
+fun f(nil) { // Error at 'nil': Expect variable name.
+  print(nil);
+}
+print f("wrong");
+

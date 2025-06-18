@@ -1,0 +1,83 @@
+class Cons {
+    init(head, tail) {
+        this.head = head;
+        this.tail = tail;
+    }
+}
+
+class List {
+    init() {
+        this.cons = nil;
+        this.size = 0;
+    }
+
+    isEmpty() {
+        return this.size == 0;
+    }
+
+    push(value) {
+        this.cons = Cons(value, this.cons);
+        this.size = this.size + 1;
+    }
+
+    pop() {
+        if (this.cons == nil) return nil;
+        var value = this.cons.head;
+        this.cons = this.cons.tail;
+        this.size = this.size - 1;
+        return value;
+    }
+
+    reverse() {
+        if (this.size == 0) return;
+        this.cons = reverse_cons(this.cons, nil);
+    }
+
+    map(f) {
+        var list = List();
+        var cons = this.cons;
+        if (cons == nil) return list;
+        
+        while (cons != nil) {
+            list.push(f(cons.head));
+            cons = cons.tail;
+        }
+        list.reverse();
+        return list;
+    }
+
+    show() {
+        var cons = this.cons;
+        while (cons != nil) {
+            print cons.head;
+            cons = cons.tail;
+        }
+    }
+}
+
+fun range(a, b) {
+    var list = List();
+    for (var i = a; i <= b; i = i + 1) {
+        list.push(i);
+    }
+    list.reverse();
+    return list;
+}
+
+fun square(x) {
+    return x * x;
+}
+
+fun reverse_cons(cons, acc) {
+    if (cons == nil) return acc;
+    return reverse_cons(cons.tail, Cons(cons.head, acc));
+}
+
+var lst = range(1, 5);
+lst = lst.map(square);
+lst.show(); 
+// expect: 1
+// expect: 4
+// expect: 9
+// expect: 16
+// expect: 25

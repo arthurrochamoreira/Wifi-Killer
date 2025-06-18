@@ -1,0 +1,15 @@
+fun i_am_your_father(n) {
+    fun luke() {
+        var dots = ".";
+        for (var i = 0; i < n; i = i + 1) {
+            print "no" + dots;
+            dots = dots + ".";
+        }
+    }
+    return luke;
+}
+
+var f = i_am_your_father(3);
+f(); // expect: no.
+     // expect: no..
+     // expect: no...
