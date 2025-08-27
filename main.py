@@ -332,6 +332,7 @@ class NetworkControlApp:
             border_radius=20,
             height=40,
             content_padding=ft.padding.symmetric(horizontal=12),
+            on_change=self.filter_devices,  # [ADICIONADO] filtra ao digitar
         )
 
         self.scan_toggle_button = ft.ElevatedButton(
@@ -352,13 +353,6 @@ class NetworkControlApp:
             ),
         )
 
-        self.block_all_button = self.create_mass_action_button(
-            "Bloquear Todos", ft.Icons.SHIELD_OUTLINED, "#f87171", self.mass_block
-        )
-        self.unblock_all_button = self.create_mass_action_button(
-            "Liberar Todos", ft.Icons.SHIELD, "#4ade80", self.mass_unblock
-        )
-
         self.update_oui_button = ft.ElevatedButton(
             content=ft.Row(
                 [
@@ -377,6 +371,59 @@ class NetworkControlApp:
             ),
         )
 
+        # [ADICIONADO] Botão "Adicionar IP" + diálogo
+        self.add_ip_button = ft.ElevatedButton(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.ADD_CIRCLE_OUTLINE, size=20),
+                    ft.Text("Adicionar IP", weight=ft.FontWeight.W_600),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            on_click=self.open_manual_ip_dialog,
+            height=40,
+            style=ft.ButtonStyle(
+                bgcolor="#374151",
+                color="white",
+                shape=ft.RoundedRectangleBorder(radius=20),
+                padding=ft.padding.symmetric(horizontal=16),
+            ),
+        )
+
+        self.manual_ip_field = ft.TextField(
+            label="Endereço IP",
+            hint_text="Ex.: 192.168.1.42",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            autofocus=True,
+        )
+        self.manual_ip_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Adicionar dispositivo por IP"),
+            content=ft.Column(
+                [
+                    self.manual_ip_field,
+                    ft.Text(
+                        "Vamos tentar resolver MAC e hostname automaticamente.",
+                        size=12,
+                        color=ft.Colors.GREY_400,
+                    ),
+                ],
+                spacing=10,
+                tight=True,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=self.cancel_manual_ip_dialog),
+                ft.ElevatedButton("Adicionar", on_click=self.confirm_manual_ip_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self.block_all_button = self.create_mass_action_button(
+            "Bloquear Todos", ft.Icons.SHIELD_OUTLINED, "#f87171", self.mass_block
+        )
+        self.unblock_all_button = self.create_mass_action_button(
+            "Liberar Todos", ft.Icons.SHIELD, "#4ade80", self.mass_unblock
+        )
 
         self.scan_progress = ft.ProgressBar(value=0, height=6, bgcolor="#1f2937")
         self.scan_status = ft.Text("Pronto", size=12, color=ft.Colors.GREY_400)
@@ -404,22 +451,20 @@ class NetworkControlApp:
         )
 
         actions = ft.Container(
-            content=ft.Column( # <-- ALTERADO: de ResponsiveRow para Column
+            content=ft.Column(
                 [
-                    # Campo de busca em uma linha separada para ocupar 100%
                     ft.Container(self.search_field, padding=ft.padding.symmetric(vertical=5)),
-                    # Botões em outra linha, também responsivos
                     ft.ResponsiveRow(
                         [
-                            ft.Container(self.scan_toggle_button, col={"xs": 12, "sm": 6}),
-                            ft.Container(self.update_oui_button, col={"xs": 12, "sm": 6}),
+                            ft.Container(self.scan_toggle_button, col={"xs": 12, "sm": 4}),   # was 6
+                            ft.Container(self.update_oui_button, col={"xs": 12, "sm": 4}),    # was 6
+                            ft.Container(self.add_ip_button,     col={"xs": 12, "sm": 4}),    # [ADICIONADO]
                         ],
                     ),
                 ],
             ),
             padding=ft.padding.symmetric(horizontal=20, vertical=10),
         )
-
 
         devices_card = ft.Container(
             expand=True,
@@ -449,6 +494,52 @@ class NetworkControlApp:
         )
 
         self.page.add(ft.Container(expand=True, content=ft.Column([header, actions, devices_card])))
+
+    # [ADICIONADO] — diálogo de IP manual
+    def open_manual_ip_dialog(self, e):
+        self.manual_ip_field.value = ""
+        self.page.dialog = self.manual_ip_dialog
+        self.manual_ip_dialog.open = True
+        self.page.update()
+
+    def cancel_manual_ip_dialog(self, e):
+        self.manual_ip_dialog.open = False
+        self.page.update()
+
+    async def _add_manual_ip(self, ip_str: str):
+        # valida IP
+        try:
+            ipaddress.ip_address(ip_str)
+        except Exception:
+            self._snack("IP inválido. Ex.: 192.168.1.42")
+            return
+
+        # evita duplicidade óbvia
+        if ip_str in self.device_index:
+            # ainda tenta enriquecer hostname/MAC se estiver "Desconhecido"
+            mac = await asyncio.to_thread(get_mac, ip_str)
+            if mac:
+                self.add_or_update_device(ip_str, mac=mac)
+            asyncio.get_running_loop().create_task(self._resolve_hostname_async(ip_str))
+            self._snack("IP já listado. Atualizando dados…")
+            return
+
+        # resolve MAC/hostname sem travar UI
+        mac = await asyncio.to_thread(get_mac, ip_str)
+        self.add_or_update_device(ip_str, mac=mac)
+        asyncio.get_running_loop().create_task(self._resolve_hostname_async(ip_str))
+        self._snack(f"Dispositivo {ip_str} adicionado.")
+
+    def _snack(self, msg: str):
+        self.page.snack_bar = ft.SnackBar(ft.Text(msg))
+        self.page.snack_bar.open = True
+        self.page.update()
+
+    async def confirm_manual_ip_dialog(self, e):
+        ip_str = (self.manual_ip_field.value or "").strip()
+        await self._add_manual_ip(ip_str)
+        self.manual_ip_dialog.open = False
+        self.page.update()
 
     def create_device_card(self, device):
         ip = device['ip']
@@ -749,15 +840,13 @@ class NetworkControlApp:
             processed = 0
 
             # Configurações de desempenho
-            CHUNK_SIZE = 32               # tamanho do lote ARP
-            ARP_TIMEOUT = 1.5            # timeout por lote (definido no _arp_chunk_scan)
-            USE_MULTITHREAD = True    # <-- altere para False se quiser a versão sequencial original
+            CHUNK_SIZE = 32
+            USE_MULTITHREAD = True
 
             self.scan_progress.value = 0
             self.page.update()
 
             if not USE_MULTITHREAD:
-                # ---------------- [MANTIDO PARA REFERÊNCIA] Varredura sequencial ----------------
                 for i in range(0, total, CHUNK_SIZE):
                     if self.stop_scan_requested:
                         return
@@ -766,28 +855,22 @@ class NetworkControlApp:
                     results = await asyncio.to_thread(self._arp_chunk_scan, chunk)
                     processed += len(chunk)
 
-                    # Enriquecimento rápido por dispositivo encontrado
                     for ip, mac in results:
                         if self.stop_scan_requested:
                             return
-                        # hostname pode bloquear; faz em thread
                         hostname = await asyncio.to_thread(get_hostname, ip)
                         self.add_or_update_device(ip, mac=mac, hostname=hostname)
 
-                    # Atualiza status/progresso por lote
                     self.scan_status.value = f"Escaneando… {len(self.all_devices)} dispositivos • {processed}/{total} IPs varridos"
                     self.scan_progress.value = processed / total if total else 0
                     self.page.update()
             else:
-                # ---------------- Varredura ARP EM PARALELO (ADICIONADO) ----------------
                 loop = asyncio.get_running_loop()
 
-                # Quebra a lista de hosts em chunks
                 chunks = [hosts[i:i + CHUNK_SIZE] for i in range(0, total, CHUNK_SIZE)]
                 total_chunks = len(chunks)
                 processed_chunks = 0
 
-                # Mapeia futuro -> tamanho do chunk
                 future_map = {}
                 for chunk in chunks:
                     fut = loop.run_in_executor(self.arp_executor, self._arp_chunk_scan, chunk)
@@ -795,12 +878,9 @@ class NetworkControlApp:
 
                 pending = list(future_map.keys())
                 active = []
-
-                # Limite de concorrência para evitar saturar rede/driver
                 MAX_CONCURRENT_CHUNKS = min(12, max(4, (os.cpu_count() or 4)))
 
                 while pending or active:
-                    # Envia até preencher a janela de concorrência
                     while pending and len(active) < MAX_CONCURRENT_CHUNKS:
                         fut = pending.pop(0)
                         active.append(fut)
@@ -808,10 +888,7 @@ class NetworkControlApp:
                     if self.stop_scan_requested:
                         break
 
-                    # Espera o próximo terminar
-                    done, not_done = await asyncio.wait(
-                        active, return_when=asyncio.FIRST_COMPLETED
-                    )
+                    done, not_done = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
 
                     for fut in done:
                         try:
@@ -830,15 +907,12 @@ class NetworkControlApp:
                         processed += future_map.get(fut, CHUNK_SIZE)
                         processed_chunks += 1
 
-                        # Atualiza UI com os dispositivos encontrados neste chunk
                         for ip, mac in results:
                             if self.stop_scan_requested:
                                 break
                             self.add_or_update_device(ip, mac=mac)
-                            # Resolve hostname em paralelo (não bloqueia)
                             loop.create_task(self._resolve_hostname_async(ip))
 
-                        # Atualiza barra/label
                         self.scan_status.value = (
                             f"Escaneando… {len(self.all_devices)} dispositivos • "
                             f"{min(processed, total)}/{total} IPs varridos • "
@@ -847,7 +921,6 @@ class NetworkControlApp:
                         self.scan_progress.value = (min(processed, total) / total) if total else 0
                         self.page.update()
 
-            # Complemento via Nmap (streaming) — também progressivo
             if NMAP_BIN and not self.stop_scan_requested:
                 await self._nmap_stream_supplement(network_cidr)
 
@@ -917,7 +990,6 @@ class NetworkControlApp:
         fut = self.page.run_task(asyncio.to_thread, _task)
         fut.add_done_callback(_done)
 
-
     # =====================================================================
     # Funções de ataque e restauração (agora como métodos da classe)
     # =====================================================================
@@ -965,7 +1037,6 @@ class NetworkControlApp:
         self.attacking[target_ip] = True
         thread = threading.Thread(target=attack_loop, daemon=True)
         thread.start()
-
 
     def stop_attack(self, target_ip, gateway_ip):
         """
