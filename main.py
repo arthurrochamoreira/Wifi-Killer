@@ -9,8 +9,7 @@ import os
 import ipaddress
 import itertools
 import re
-import concurrent.futures   # <-- ADICIONADO
-
+import concurrent.futures
 
 # Dependências de rede
 import ifaddr
@@ -330,8 +329,7 @@ class NetworkControlApp:
             prefix_icon=ft.Icons.SEARCH,
             border_color="#374151",
             focused_border_color="#3b82f6",
-            border_radius=8,
-            on_change=self.filter_devices,
+            border_radius=20,
             height=40,
             content_padding=ft.padding.symmetric(horizontal=12),
         )
@@ -349,7 +347,7 @@ class NetworkControlApp:
             style=ft.ButtonStyle(
                 bgcolor="#2563eb",
                 color="white",
-                shape=ft.RoundedRectangleBorder(radius=8),
+                shape=ft.RoundedRectangleBorder(radius=20),
                 padding=ft.padding.symmetric(horizontal=16),
             ),
         )
@@ -361,13 +359,24 @@ class NetworkControlApp:
             "Liberar Todos", ft.Icons.SHIELD, "#4ade80", self.mass_unblock
         )
 
-        self.update_oui_button = ft.TextButton(
-            content=ft.Row([
-                ft.Icon(ft.Icons.DOWNLOAD, size=16, color="#60a5fa"),
-                ft.Text("Atualizar base OUI (IEEE)", size=12, color="#60a5fa"),
-            ]),
+        self.update_oui_button = ft.ElevatedButton(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.DOWNLOAD, size=20),
+                    ft.Text("Atualizar base OUI (IEEE)", weight=ft.FontWeight.W_600),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
             on_click=self.update_oui_cache,
+            height=40,
+            style=ft.ButtonStyle(
+                bgcolor="#374151", 
+                color="#60a5fa",
+                shape=ft.RoundedRectangleBorder(radius=20),
+                padding=ft.padding.symmetric(horizontal=16),
+            ),
         )
+
 
         self.scan_progress = ft.ProgressBar(value=0, height=6, bgcolor="#1f2937")
         self.scan_status = ft.Text("Pronto", size=12, color=ft.Colors.GREY_400)
@@ -395,17 +404,22 @@ class NetworkControlApp:
         )
 
         actions = ft.Container(
-            content=ft.ResponsiveRow(
+            content=ft.Column( # <-- ALTERADO: de ResponsiveRow para Column
                 [
-                    ft.Container(self.search_field, col={"xs": 12, "sm": 6, "md": 6, "lg": 6}),
-                    ft.Container(self.scan_toggle_button, col={"xs": 12, "sm": 3, "md": 2, "lg": 2}),
-                    ft.Container(self.update_oui_button, col={"xs": 12, "sm": 3, "md": 2, "lg": 2}),
+                    # Campo de busca em uma linha separada para ocupar 100%
+                    ft.Container(self.search_field, padding=ft.padding.symmetric(vertical=5)),
+                    # Botões em outra linha, também responsivos
+                    ft.ResponsiveRow(
+                        [
+                            ft.Container(self.scan_toggle_button, col={"xs": 12, "sm": 6}),
+                            ft.Container(self.update_oui_button, col={"xs": 12, "sm": 6}),
+                        ],
+                    ),
                 ],
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
             padding=ft.padding.symmetric(horizontal=20, vertical=10),
         )
+
 
         devices_card = ft.Container(
             expand=True,
@@ -416,14 +430,14 @@ class NetworkControlApp:
                         ft.Row([self.block_all_button, self.unblock_all_button]),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     padding=ft.padding.only(left=16, right=8, top=12, bottom=8),
-                    border=ft.border.only(bottom=ft.border.BorderSide(1, "#374151")),
+                    border=ft.border.only(bottom=ft.border.BorderSide(width=1, color="#374151")),
                 ),
                 ft.Container(self.scan_progress, padding=ft.padding.symmetric(horizontal=16)),
                 ft.Container(self.scan_status, padding=ft.padding.only(left=16, right=16, bottom=8)),
                 self.devices_list_view,
             ]),
             bgcolor="#1f2937",   # bg-gray-800
-            border=ft.border.all(1, "#374151"),   # border-gray-700
+            border=ft.border.all(width=1, color="#374151"),   # border-gray-700
             border_radius=12,
             margin=ft.margin.all(20),
             shadow=ft.BoxShadow(
@@ -499,7 +513,7 @@ class NetworkControlApp:
                 style=ft.ButtonStyle(
                     bgcolor=btn_bgcolor,
                     color="white",
-                    shape=ft.RoundedRectangleBorder(radius=8),
+                    shape=ft.RoundedRectangleBorder(radius=20),
                 ),
             )
 
@@ -531,9 +545,9 @@ class NetworkControlApp:
         return ft.Container(
             content=card_content,
             padding=ft.padding.all(12),
-            border_radius=8,
+            border_radius=12,
             ink=True,
-            bgcolor=ft.Colors.with_opacity(0.02, "white") if status != 'Este Dispositivo' else ft.Colors.with_opacity(0.1, "#a78bfa"),
+            bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.WHITE) if status != 'Este Dispositivo' else ft.Colors.with_opacity(0.1, "#a78bfa"),
             data=device,
         )
 
@@ -674,6 +688,7 @@ class NetworkControlApp:
             self.scan_toggle_button.content.controls[0].name = ft.Icons.STOP_CIRCLE
             self.scan_toggle_button.content.controls[1].value = "Parar Scan"
             self.scan_toggle_button.style.bgcolor = "#dc2626"
+            self.scan_toggle_button.style.shape = ft.RoundedRectangleBorder(radius=20)
             self.scan_status.value = "Escaneando..."
             self.scan_progress.value = None   # indeterminado durante preparação
             self.page.update()
@@ -685,6 +700,7 @@ class NetworkControlApp:
             self.scan_toggle_button.content.controls[0].name = ft.Icons.WIFI
             self.scan_toggle_button.content.controls[1].value = "Escanear Rede"
             self.scan_toggle_button.style.bgcolor = "#2563eb"
+            self.scan_toggle_button.style.shape = ft.RoundedRectangleBorder(radius=20)
             self.scan_status.value = "Pronto"
             self.scan_progress.value = 0
             self.page.update()
