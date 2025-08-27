@@ -9,6 +9,7 @@ import os
 import ipaddress
 import itertools
 import re
+import concurrent.futures  # <-- ADICIONADO
 
 
 # Dependências de rede
@@ -374,6 +375,12 @@ class NetworkControlApp:
         self.stop_scan_requested = False
         self.scanning = False
 
+        # --- POOLS DE THREADS PARA PARALELISMO (ADICIONADO) ---
+        self.arp_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(12, max(4, (os.cpu_count() or 4)))
+        )
+        self.dns_executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+
         # Descoberta de interface/sub-rede/gateway e Nmap
         iface, gw_ip, subnet = detect_active_interface_and_subnet()
         CURRENT_IFACE = iface
@@ -713,6 +720,19 @@ class NetworkControlApp:
             # Silencia erros do nmap (não crítico)
             return
 
+    # ---------- RESOLUÇÃO DE HOSTNAME ASSÍNCRONA (ADICIONADO) ----------
+    async def _resolve_hostname_async(self, ip: str, timeout: float = 0.75):
+        loop = asyncio.get_running_loop()
+        try:
+            hostname = await asyncio.wait_for(
+                loop.run_in_executor(self.dns_executor, get_hostname, ip),
+                timeout=timeout,
+            )
+        except Exception:
+            hostname = None
+        if hostname and not self.stop_scan_requested:
+            self.add_or_update_device(ip, hostname=hostname)
+
     # ---------------- Ações ----------------
     async def toggle_scan(self, e):
         if not self.scanning:
@@ -783,31 +803,101 @@ class NetworkControlApp:
             # Configurações de desempenho
             CHUNK_SIZE = 32          # tamanho do lote ARP
             ARP_TIMEOUT = 1.5        # timeout por lote (definido no _arp_chunk_scan)
+            USE_MULTITHREAD = True   # <-- altere para False se quiser a versão sequencial original
 
             self.scan_progress.value = 0
             self.page.update()
 
-            # Varredura ARP em lotes (progressiva)
-            for i in range(0, total, CHUNK_SIZE):
-                if self.stop_scan_requested:
-                    return
-                chunk = hosts[i:i + CHUNK_SIZE]
-
-                results = await asyncio.to_thread(self._arp_chunk_scan, chunk)
-                processed += len(chunk)
-
-                # Enriquecimento rápido por dispositivo encontrado
-                for ip, mac in results:
+            if not USE_MULTITHREAD:
+                # ---------------- [MANTIDO PARA REFERÊNCIA] Varredura sequencial ----------------
+                for i in range(0, total, CHUNK_SIZE):
                     if self.stop_scan_requested:
                         return
-                    # hostname pode bloquear; faz em thread
-                    hostname = await asyncio.to_thread(get_hostname, ip)
-                    self.add_or_update_device(ip, mac=mac, hostname=hostname)
+                    chunk = hosts[i:i + CHUNK_SIZE]
 
-                # Atualiza status/progresso por lote
-                self.scan_status.value = f"Escaneando… {len(self.all_devices)} dispositivos • {processed}/{total} IPs varridos"
-                self.scan_progress.value = processed / total if total else 0
-                self.page.update()
+                    results = await asyncio.to_thread(self._arp_chunk_scan, chunk)
+                    processed += len(chunk)
+
+                    # Enriquecimento rápido por dispositivo encontrado
+                    for ip, mac in results:
+                        if self.stop_scan_requested:
+                            return
+                        # hostname pode bloquear; faz em thread
+                        hostname = await asyncio.to_thread(get_hostname, ip)
+                        self.add_or_update_device(ip, mac=mac, hostname=hostname)
+
+                    # Atualiza status/progresso por lote
+                    self.scan_status.value = f"Escaneando… {len(self.all_devices)} dispositivos • {processed}/{total} IPs varridos"
+                    self.scan_progress.value = processed / total if total else 0
+                    self.page.update()
+            else:
+                # ---------------- Varredura ARP EM PARALELO (ADICIONADO) ----------------
+                loop = asyncio.get_running_loop()
+
+                # Quebra a lista de hosts em chunks
+                chunks = [hosts[i:i + CHUNK_SIZE] for i in range(0, total, CHUNK_SIZE)]
+                total_chunks = len(chunks)
+                processed_chunks = 0
+
+                # Mapeia futuro -> tamanho do chunk
+                future_map = {}
+                for chunk in chunks:
+                    fut = loop.run_in_executor(self.arp_executor, self._arp_chunk_scan, chunk)
+                    future_map[fut] = len(chunk)
+
+                pending = list(future_map.keys())
+                active = []
+
+                # Limite de concorrência para evitar saturar rede/driver
+                MAX_CONCURRENT_CHUNKS = min(12, max(4, (os.cpu_count() or 4)))
+
+                while pending or active:
+                    # Envia até preencher a janela de concorrência
+                    while pending and len(active) < MAX_CONCURRENT_CHUNKS:
+                        fut = pending.pop(0)
+                        active.append(fut)
+
+                    if self.stop_scan_requested:
+                        break
+
+                    # Espera o próximo terminar
+                    done, not_done = await asyncio.wait(
+                        active, return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    for fut in done:
+                        try:
+                            active.remove(fut)
+                        except ValueError:
+                            pass
+
+                        if self.stop_scan_requested:
+                            continue
+
+                        try:
+                            results = fut.result()
+                        except Exception:
+                            results = []
+
+                        processed += future_map.get(fut, CHUNK_SIZE)
+                        processed_chunks += 1
+
+                        # Atualiza UI com os dispositivos encontrados neste chunk
+                        for ip, mac in results:
+                            if self.stop_scan_requested:
+                                break
+                            self.add_or_update_device(ip, mac=mac)
+                            # Resolve hostname em paralelo (não bloqueia)
+                            loop.create_task(self._resolve_hostname_async(ip))
+
+                        # Atualiza barra/label
+                        self.scan_status.value = (
+                            f"Escaneando… {len(self.all_devices)} dispositivos • "
+                            f"{min(processed, total)}/{total} IPs varridos • "
+                            f"{processed_chunks}/{total_chunks} lotes"
+                        )
+                        self.scan_progress.value = (min(processed, total) / total) if total else 0
+                        self.page.update()
 
             # Complemento via Nmap (streaming) — também progressivo
             if NMAP_BIN and not self.stop_scan_requested:
