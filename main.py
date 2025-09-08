@@ -305,6 +305,8 @@ class NetworkControlApp:
         self.device_index = {}                # ip -> dict (acesso/atualização rápida)
         self.stop_scan_requested = False
         self.scanning = False
+        self.attack_events = {}  # ip -> threading.Event
+
 
         # --- POOLS DE THREADS PARA PARALELISMO (ADICIONADO) ---
         self.arp_executor = concurrent.futures.ThreadPoolExecutor(
@@ -601,12 +603,15 @@ class NetworkControlApp:
                 icon=btn_icon,
                 on_click=lambda _, d=device: self.toggle_device_attack(d),
                 height=38,
+                width=120,  # largura fixa para padronizar Bloquear/Liberar
                 style=ft.ButtonStyle(
                     bgcolor=btn_bgcolor,
                     color="white",
                     shape=ft.RoundedRectangleBorder(radius=20),
+                    padding=ft.padding.symmetric(horizontal=12),  # já conta espaço do ícone
                 ),
             )
+
 
         left = ft.Container(
             content=ft.Row([
@@ -693,16 +698,26 @@ class NetworkControlApp:
 
     def _arp_chunk_scan(self, ips):
         """Executa ARP para um pequeno lote de IPs e retorna [(ip, mac)]."""
+        if self.stop_scan_requested:
+            return []
+
         try:
             packets = [Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip) for ip in ips]
-            answered, _ = srp(packets, timeout=1.5, iface=CURRENT_IFACE, verbose=0)
+            answered, _ = srp(
+                packets,
+                timeout=0.3,  # bem curto para parar rápido
+                iface=CURRENT_IFACE,
+                verbose=0,
+            )
+            if self.stop_scan_requested:
+                return []
             return [(r.psrc, r.hwsrc) for _, r in answered]
         except Exception:
             return []
 
     async def _nmap_stream_supplement(self, network_cidr: str):
         """Roda nmap -sn em modo streaming, enriquecendo MAC/vendor conforme linhas chegam."""
-        if not NMAP_BIN:
+        if not NMAP_BIN or self.stop_scan_requested:
             return
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -718,7 +733,7 @@ class NetworkControlApp:
                         proc.kill()
                     except Exception:
                         pass
-                    break
+                    return  # sai na hora
 
                 line = await proc.stdout.readline()
                 if not line:
@@ -730,13 +745,13 @@ class NetworkControlApp:
                     if m:
                         current_ip = m.group(1)
                     else:
-                        # pode vir apenas IP no final
                         try:
                             current_ip = s.split("for", 1)[1].strip().split()[-1]
                         except Exception:
                             current_ip = None
                     if current_ip:
                         self.add_or_update_device(current_ip)
+
                 elif "MAC Address:" in s and current_ip:
                     try:
                         mac = s.split("MAC Address: ")[1].split()[0]
@@ -754,8 +769,8 @@ class NetworkControlApp:
             except Exception:
                 pass
         except Exception:
-            # Silencia erros do nmap (não crítico)
             return
+
 
     # ---------- RESOLUÇÃO DE HOSTNAME ASSÍNCRONA (ADICIONADO) ----------
     async def _resolve_hostname_async(self, ip: str, timeout: float = 0.75):
@@ -801,36 +816,31 @@ class NetworkControlApp:
 
     async def run_scan_task(self):
         """
-        Novo fluxo progressivo:
-        - Adiciona gateway e local imediatamente
-        - Varre ARP em lotes (atualizando a cada lote)
-        - Complementa via Nmap em streaming (se disponível)
+        Fluxo de scan com parada imediata:
+        - Adiciona gateway/local
+        - Cancela todos os futures ao parar
+        - Mata Nmap sem esperar
         """
         try:
-            # Limpa estado de lista
             self.all_devices.clear()
             self.device_index.clear()
             self.devices_list_view.controls.clear()
             self.page.update()
 
-            # Determina rede alvo
             if CURRENT_SUBNET is not None:
                 network_cidr = str(CURRENT_SUBNET)
             else:
                 network_cidr = f"{'.'.join(self.gateway_ip.split('.')[:-1])}.0/24"
 
-            # Adiciona gateway/local cedo
             for special_ip in [self.gateway_ip, self.local_ip]:
                 if special_ip:
                     mac = await asyncio.to_thread(get_mac, special_ip)
                     self.add_or_update_device(special_ip, mac=mac)
 
-            # Gera hosts e remove gateway/local
             try:
                 net = ipaddress.ip_network(network_cidr, strict=False)
                 hosts = [str(h) for h in net.hosts()]
             except Exception:
-                # fallback /24
                 base = f"{'.'.join(self.gateway_ip.split('.')[:-1])}.0/24"
                 net = ipaddress.ip_network(base, strict=False)
                 hosts = [str(h) for h in net.hosts()]
@@ -839,87 +849,69 @@ class NetworkControlApp:
             total = len(hosts)
             processed = 0
 
-            # Configurações de desempenho
             CHUNK_SIZE = 32
-            USE_MULTITHREAD = True
+            loop = asyncio.get_running_loop()
+            chunks = [hosts[i:i + CHUNK_SIZE] for i in range(0, total, CHUNK_SIZE)]
+            total_chunks = len(chunks)
+            processed_chunks = 0
 
-            self.scan_progress.value = 0
-            self.page.update()
+            future_map = {}
+            for chunk in chunks:
+                if self.stop_scan_requested:
+                    return
+                fut = loop.run_in_executor(self.arp_executor, self._arp_chunk_scan, chunk)
+                future_map[fut] = len(chunk)
 
-            if not USE_MULTITHREAD:
-                for i in range(0, total, CHUNK_SIZE):
+            pending = list(future_map.keys())
+            active = []
+            MAX_CONCURRENT_CHUNKS = min(12, max(4, (os.cpu_count() or 4)))
+
+            while pending or active:
+                while pending and len(active) < MAX_CONCURRENT_CHUNKS:
+                    fut = pending.pop(0)
+                    active.append(fut)
+
+                if self.stop_scan_requested:
+                    # Mata todas as tasks ativas imediatamente
+                    for fut in active:
+                        fut.cancel()
+                    return
+
+                done, not_done = await asyncio.wait(
+                    active,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                for fut in done:
+                    try:
+                        active.remove(fut)
+                    except ValueError:
+                        pass
+
                     if self.stop_scan_requested:
                         return
-                    chunk = hosts[i:i + CHUNK_SIZE]
 
-                    results = await asyncio.to_thread(self._arp_chunk_scan, chunk)
-                    processed += len(chunk)
+                    try:
+                        results = fut.result()
+                    except Exception:
+                        results = []
+
+                    processed += future_map.get(fut, CHUNK_SIZE)
+                    processed_chunks += 1
 
                     for ip, mac in results:
                         if self.stop_scan_requested:
                             return
-                        hostname = await asyncio.to_thread(get_hostname, ip)
-                        self.add_or_update_device(ip, mac=mac, hostname=hostname)
+                        self.add_or_update_device(ip, mac=mac)
+                        loop.create_task(self._resolve_hostname_async(ip))
 
-                    self.scan_status.value = f"Escaneando… {len(self.all_devices)} dispositivos • {processed}/{total} IPs varridos"
-                    self.scan_progress.value = processed / total if total else 0
+                    self.scan_status.value = (
+                        f"Escaneando… {len(self.all_devices)} dispositivos • "
+                        f"{min(processed, total)}/{total} IPs • "
+                        f"{processed_chunks}/{total_chunks} lotes"
+                    )
+                    self.scan_progress.value = (min(processed, total) / total) if total else 0
                     self.page.update()
-            else:
-                loop = asyncio.get_running_loop()
-
-                chunks = [hosts[i:i + CHUNK_SIZE] for i in range(0, total, CHUNK_SIZE)]
-                total_chunks = len(chunks)
-                processed_chunks = 0
-
-                future_map = {}
-                for chunk in chunks:
-                    fut = loop.run_in_executor(self.arp_executor, self._arp_chunk_scan, chunk)
-                    future_map[fut] = len(chunk)
-
-                pending = list(future_map.keys())
-                active = []
-                MAX_CONCURRENT_CHUNKS = min(12, max(4, (os.cpu_count() or 4)))
-
-                while pending or active:
-                    while pending and len(active) < MAX_CONCURRENT_CHUNKS:
-                        fut = pending.pop(0)
-                        active.append(fut)
-
-                    if self.stop_scan_requested:
-                        break
-
-                    done, not_done = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
-
-                    for fut in done:
-                        try:
-                            active.remove(fut)
-                        except ValueError:
-                            pass
-
-                        if self.stop_scan_requested:
-                            continue
-
-                        try:
-                            results = fut.result()
-                        except Exception:
-                            results = []
-
-                        processed += future_map.get(fut, CHUNK_SIZE)
-                        processed_chunks += 1
-
-                        for ip, mac in results:
-                            if self.stop_scan_requested:
-                                break
-                            self.add_or_update_device(ip, mac=mac)
-                            loop.create_task(self._resolve_hostname_async(ip))
-
-                        self.scan_status.value = (
-                            f"Escaneando… {len(self.all_devices)} dispositivos • "
-                            f"{min(processed, total)}/{total} IPs varridos • "
-                            f"{processed_chunks}/{total_chunks} lotes"
-                        )
-                        self.scan_progress.value = (min(processed, total) / total) if total else 0
-                        self.page.update()
 
             if NMAP_BIN and not self.stop_scan_requested:
                 await self._nmap_stream_supplement(network_cidr)
@@ -1016,45 +1008,52 @@ class NetworkControlApp:
 
     def start_attack(self, target_ip, gateway_ip):
         """
-        Loop em thread enviando spoof bilateral. Usa os MACs do cache.
+        Inicia spoofing com evento de parada imediata.
         """
         target_device = self.device_index.get(target_ip)
         gateway_device = self.device_index.get(gateway_ip)
 
         if not target_device or not gateway_device or not target_device.get('mac') or not gateway_device.get('mac'):
-            # Não inicia o ataque se os MACs não estiverem no cache
             return
 
         target_mac = target_device['mac']
         gateway_mac = gateway_device['mac']
 
+        stop_event = threading.Event()
+        self.attack_events[target_ip] = stop_event
+        self.attacking[target_ip] = True
+
         def attack_loop():
-            while self.attacking.get(target_ip):
+            while not stop_event.is_set():
                 self.spoof(target_ip, gateway_ip, target_mac)
                 self.spoof(gateway_ip, target_ip, gateway_mac)
-                time.sleep(2)
+                # espera, mas pode ser interrompido
+                stop_event.wait(timeout=2)
 
-        self.attacking[target_ip] = True
         thread = threading.Thread(target=attack_loop, daemon=True)
         thread.start()
 
     def stop_attack(self, target_ip, gateway_ip):
         """
-        Para o loop de ataque e restaura o ARP usando os MACs do cache.
+        Para o ataque imediatamente usando Event.
         """
-        target_device = self.device_index.get(target_ip)
-        gateway_device = self.device_index.get(gateway_ip)
-
-        if target_ip in self.attacking and target_device and gateway_device:
+        if target_ip in self.attacking:
             self.attacking[target_ip] = False
-            time.sleep(0.1)  # Dá tempo para a thread de ataque morrer
 
-            target_mac = target_device.get('mac')
-            gateway_mac = gateway_device.get('mac')
-            
-            # Chama o método restore, passando os MACs corretos do cache
-            self.restore(target_ip, gateway_ip, target_mac, gateway_mac)
-            self.restore(gateway_ip, target_ip, gateway_mac, target_mac)
+            stop_event = self.attack_events.get(target_ip)
+            if stop_event:
+                stop_event.set()  # acorda a thread imediatamente
+                del self.attack_events[target_ip]
+
+            target_device = self.device_index.get(target_ip)
+            gateway_device = self.device_index.get(gateway_ip)
+
+            if target_device and gateway_device:
+                target_mac = target_device.get('mac')
+                gateway_mac = gateway_device.get('mac')
+                self.restore(target_ip, gateway_ip, target_mac, gateway_mac)
+                self.restore(gateway_ip, target_ip, gateway_mac, target_mac)
+
 
 # =====================================================================
 # Bootstrap Flet
