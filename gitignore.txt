@@ -1,0 +1,189 @@
+# Arquivos de Sistema Operacional
+.DS_Store
+.localized
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# Ambientes Virtuais Python 
+.venv/
+
+# Build artifacts
+/target/
+/build/
+/out/
+
+# Compiled class files
+*.class
+
+# JARs, WARs, EARs (gerados pelo build)
+*.jar
+*.war
+*.ear
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# Arquivos de log
+*.log
+logs/
+target/*.log
+
+# Arquivos temporários e de backup
+*~
+*.bak
+*.tmp
+*.swp
+*.swo
+*.orig
+
+# Dependências baixadas (se não estiver usando Maven/Gradle Wrapper para gerenciar)
+# Se você tiver um diretório lib/ com jars que não são gerenciados por um build tool, ignore-o.
+# lib/
+# *.jar
+
+# Configurações de IDE - IntelliJ IDEA
+.idea/
+!/.idea/workspace.xml
+!/.idea/tasks.xml
+!/.idea/shelf/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.idea/
+.gradle/
+.vscode/
+bin/
+target/
+.apt_generated/
+.factorypath
+.recommenders/
+.springBeans
+.sts4-cache
+
+# Configurações de IDE - Eclipse
+.metadata/
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.settings/
+.loadpath
+.recommenders/
+.project
+.classpath
+
+# Configurações de IDE - NetBeans
+nbproject/private/
+build/
+dist/
+nbbuild/
+.nb-gradle/
+nb-configuration.xml
+
+# Arquivos de Teste/Relatórios de Cobertura de Código
+/test-output/
+/surefire-reports/
+/failsafe-reports/
+/jacoco/
+/cobertura/
+/target/site/
+*.exec
+
+# Arquivos de dependência (geralmente gerenciados por Maven/Gradle)
+# Se você *não* estiver usando um gerenciador de dependências, talvez precise comentar alguns abaixo.
+# Maven
+pom.xml.tag
+pom.xml.next
+pom.xml.bak
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.stacktrace
+
+# Gradle
+.gradle/
+build/
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated
+.springBeans
+.sts4-cache
+.gradle-tooling/
+.apt_generated
+
+# Ignorar o diretório .mvn/wrapper/maven-wrapper.jar se você usa o Maven Wrapper,
+# mas mantenha o .mvn/wrapper/maven-wrapper.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Docker
+Dockerfile.orig
+docker-compose.yml.orig
+
+# Vagrant
+.vagrant/
+
+# Node.js (se o seu projeto Java usar algo de frontend com Node.js)
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Arquivos de pacote de SO (Mac, Windows)
+.DS_Store
+ehthumbs.db
+.Spotlight-V100
+.Trashes
+__MACOSX
+
+# Arquivos de segurança e credenciais (NÃO DEVE SER COMMITADO JAMAIS)
+*.key
+*.pem
+*.pfx
+*.jks
+*.properties.enc
+*.yml.enc
+*.json.enc
+*.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Arquivos de configuração específicos do usuário/máquina (geralmente com variáveis de ambiente ou segredos)
+*.properties
+!src/main/resources/*.properties # Não ignore arquivos .properties dentro de src/main/resources
+# Se você tiver um arquivo application.properties ou application.yml que *deve* ser versionado,
+# você pode reverter a regra para ele, por exemplo:
+# !src/main/resources/application.properties
+
+# Cache de IDE e builds incrementais
+.cache/
+
+# Git
+.git/
+.gitattributes
+.gitignore
+.gitkeep
+
+# Arquivos gerados por ferramentas de qualidade de código/linting
+.sonar/
+.pylint.d/
+.mypy_cache/
+.ruff_cache/
+
+# Outros
+coverage/
+output/
+tmp/
+dist/
+vendor/
