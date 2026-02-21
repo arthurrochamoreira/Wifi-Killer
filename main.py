@@ -328,7 +328,7 @@ class NetworkControlApp:
         # Controles de UI
         self.search_field = ft.TextField(
             hint_text="Buscar por IP, MAC, nome, ou fabricante...",
-            prefix_icon=ft.Icons.SEARCH,
+            prefix_icon=ft.icons.SEARCH,
             border_color="#374151",
             focused_border_color="#3b82f6",
             border_radius=20,
@@ -340,7 +340,7 @@ class NetworkControlApp:
         self.scan_toggle_button = ft.ElevatedButton(
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.WIFI, size=20),
+                    ft.Icon(ft.icons.WIFI, size=20),
                     ft.Text("Escanear Rede", weight=ft.FontWeight.W_600),
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -358,7 +358,7 @@ class NetworkControlApp:
         self.update_oui_button = ft.ElevatedButton(
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.DOWNLOAD, size=20),
+                    ft.Icon(ft.icons.DOWNLOAD, size=20),
                     ft.Text("Atualizar base OUI (IEEE)", weight=ft.FontWeight.W_600),
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -377,7 +377,7 @@ class NetworkControlApp:
         self.add_ip_button = ft.ElevatedButton(
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.ADD_CIRCLE_OUTLINE, size=20),
+                    ft.Icon(ft.icons.ADD_CIRCLE_OUTLINE, size=20),
                     ft.Text("Adicionar IP", weight=ft.FontWeight.W_600),
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -407,7 +407,7 @@ class NetworkControlApp:
                     ft.Text(
                         "Vamos tentar resolver MAC e hostname automaticamente.",
                         size=12,
-                        color=ft.Colors.GREY_400,
+                        color=ft.colors.GREY_400,
                     ),
                 ],
                 spacing=10,
@@ -421,14 +421,14 @@ class NetworkControlApp:
         )
 
         self.block_all_button = self.create_mass_action_button(
-            "Bloquear Todos", ft.Icons.SHIELD_OUTLINED, "#f87171", self.mass_block
+            "Bloquear Todos", ft.icons.SHIELD_OUTLINED, "#f87171", self.mass_block
         )
         self.unblock_all_button = self.create_mass_action_button(
-            "Liberar Todos", ft.Icons.SHIELD, "#4ade80", self.mass_unblock
+            "Liberar Todos", ft.icons.SHIELD, "#4ade80", self.mass_unblock
         )
 
         self.scan_progress = ft.ProgressBar(value=0, height=6, bgcolor="#1f2937")
-        self.scan_status = ft.Text("Pronto", size=12, color=ft.Colors.GREY_400)
+        self.scan_status = ft.Text("Pronto", size=12, color=ft.colors.GREY_400)
 
         self.devices_list_view = ft.ListView(expand=True, spacing=4, padding=ft.padding.symmetric(horizontal=8))
 
@@ -440,14 +440,14 @@ class NetworkControlApp:
         return ft.TextButton(
             content=ft.Row([ft.Icon(icon, size=16, color=color), ft.Text(text, size=12, color=color)]),
             on_click=on_click,
-            style=ft.ButtonStyle(overlay_color=ft.Colors.with_opacity(0.1, color)),
+            style=ft.ButtonStyle(overlay_color=ft.colors.with_opacity(0.1, color)),
         )
 
     def build_layout(self):
         header = ft.Container(
             content=ft.Column([
                 ft.Text("Painel de Controle da Rede", size=28, weight=ft.FontWeight.BOLD),
-                ft.Text("Gerencie dispositivos e proteja sua rede contra ARP Spoofing.", color=ft.Colors.GREY_400),
+                ft.Text("Gerencie dispositivos e proteja sua rede contra ARP Spoofing.", color=ft.colors.GREY_400),
             ]),
             padding=ft.padding.only(top=20, left=20, right=20, bottom=10),
         )
@@ -490,7 +490,7 @@ class NetworkControlApp:
             shadow=ft.BoxShadow(
                 spread_radius=1,
                 blur_radius=15,
-                color=ft.Colors.with_opacity(0.2, "black"),
+                color=ft.colors.with_opacity(0.2, "black"),
                 offset=ft.Offset(0, 5),
             ),
         )
@@ -552,19 +552,19 @@ class NetworkControlApp:
 
         # Ícone por status/tipo
         if status == 'Gateway Padrão':
-            icon_name = ft.Icons.ROUTER_OUTLINED
+            icon_name = ft.icons.ROUTER_OUTLINED
             icon_color = "#60a5fa"
             icon_bg = "#1e40af"
         elif status == 'Este Dispositivo':
-            icon_name = ft.Icons.LAPTOP_MAC_OUTLINED
+            icon_name = ft.icons.LAPTOP_MAC_OUTLINED
             icon_color = "#a78bfa"
             icon_bg = "#4338ca"
         elif status == 'Bloqueado':
-            icon_name = ft.Icons.NO_CELL_OUTLINED
+            icon_name = ft.icons.NO_CELL_OUTLINED
             icon_color = "#f87171"
             icon_bg = "#991b1b"
         else:   # Conectado
-            icon_name = ft.Icons.DEVICE_UNKNOWN
+            icon_name = ft.icons.DEVICE_UNKNOWN
             icon_color = "#4ade80"
             icon_bg = "#166534"
 
@@ -595,7 +595,7 @@ class NetworkControlApp:
         if status not in ['Gateway Padrão', 'Este Dispositivo']:
             is_blocked = status == 'Bloqueado'
             btn_text = "Liberar" if is_blocked else "Bloquear"
-            btn_icon = ft.Icons.CHECK_CIRCLE_OUTLINE if is_blocked else ft.Icons.BLOCK
+            btn_icon = ft.icons.CHECK_CIRCLE_OUTLINE if is_blocked else ft.icons.BLOCK
             btn_bgcolor = "#16a34a" if is_blocked else "#4b5563"
 
             action_button = ft.ElevatedButton(
@@ -618,9 +618,9 @@ class NetworkControlApp:
                 device_icon,
                 ft.Column([
                     ft.Text(ip, weight=ft.FontWeight.BOLD, size=15),
-                    ft.Text(hostname, color=ft.Colors.GREY_400, size=12),
-                    ft.Text(mac, color=ft.Colors.GREY_500, size=12, font_family="monospace"),
-                    ft.Text(vendor, color=ft.Colors.GREY_500, size=12),
+                    ft.Text(hostname, color=ft.colors.GREY_400, size=12),
+                    ft.Text(mac, color=ft.colors.GREY_500, size=12, font_family="monospace"),
+                    ft.Text(vendor, color=ft.colors.GREY_500, size=12),
                 ], spacing=2),
             ]),
             col={"xs": 12, "sm": 7},
@@ -643,7 +643,7 @@ class NetworkControlApp:
             padding=ft.padding.all(12),
             border_radius=12,
             ink=True,
-            bgcolor=ft.Colors.with_opacity(0.02, ft.Colors.WHITE) if status != 'Este Dispositivo' else ft.Colors.with_opacity(0.1, "#a78bfa"),
+            bgcolor=ft.colors.with_opacity(0.02, ft.colors.WHITE) if status != 'Este Dispositivo' else ft.colors.with_opacity(0.1, "#a78bfa"),
             data=device,
         )
 
@@ -791,7 +791,7 @@ class NetworkControlApp:
             # Iniciar
             self.scanning = True
             self.stop_scan_requested = False
-            self.scan_toggle_button.content.controls[0].name = ft.Icons.STOP_CIRCLE
+            self.scan_toggle_button.content.controls[0].name = ft.icons.STOP_CIRCLE
             self.scan_toggle_button.content.controls[1].value = "Parar Scan"
             self.scan_toggle_button.style.bgcolor = "#dc2626"
             self.scan_toggle_button.style.shape = ft.RoundedRectangleBorder(radius=20)
@@ -803,7 +803,7 @@ class NetworkControlApp:
 
             # Finalizar
             self.scanning = False
-            self.scan_toggle_button.content.controls[0].name = ft.Icons.WIFI
+            self.scan_toggle_button.content.controls[0].name = ft.icons.WIFI
             self.scan_toggle_button.content.controls[1].value = "Escanear Rede"
             self.scan_toggle_button.style.bgcolor = "#2563eb"
             self.scan_toggle_button.style.shape = ft.RoundedRectangleBorder(radius=20)
