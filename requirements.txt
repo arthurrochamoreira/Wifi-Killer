@@ -1,4 +1,4 @@
 flet
 scapy
 requests
-netifaces
+flet==0.22.0

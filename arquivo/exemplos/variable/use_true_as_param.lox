@@ -1,5 +1,0 @@
-fun f(true) { // Error at 'true': Expect variable name.
-  print(true);
-}
-print f("wrong");
-

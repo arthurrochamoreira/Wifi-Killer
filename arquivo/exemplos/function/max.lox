@@ -1,8 +1,0 @@
-fun max(x, y) {
-  if (x > y) return x;
-  return y;
-}
-
-print max(10, 20); // expect: 20
-print max(20, 10); // expect: 20
-print max(10, 10); // expect: 10
