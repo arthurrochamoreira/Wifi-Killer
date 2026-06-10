@@ -1,5 +1,5 @@
-flet
 scapy
 requests
-flet==0.22.0
 ifaddr
+fastapi
+uvicorn[standard]

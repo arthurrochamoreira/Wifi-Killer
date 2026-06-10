@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Painel de Controle da Rede</title>
+    <!-- Tailwind (CDN, modo dev) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Babel para transpilar JSX no navegador (apenas para dev/protótipo) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>body { background: #111827; }</style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- Import map: React + lucide-react via ESM -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@18",
+          "react-dom/client": "https://esm.sh/react-dom@18/client",
+          "lucide-react": "https://esm.sh/lucide-react@0.383.0?deps=react@18"
+        }
+      }
+    </script>
+
+    <!-- Base da API (ajuste se o backend não estiver em localhost:8000) -->
+    <script>
+      window.__API_BASE__ = "http://localhost:8000";
+    </script>
+
+    <!-- App.jsx transpilado em runtime -->
+    <script type="text/babel" data-type="module" data-presets="react">
+      import { createRoot } from "react-dom/client";
+      // App.jsx é carregado e transpilado abaixo via fetch+Babel.
+    </script>
+
+    <script type="module">
+      // Carrega o App.jsx, transpila com Babel e monta na página.
+      const src = await fetch("./App.jsx").then((r) => r.text());
+      const { code } = Babel.transform(src, {
+        presets: ["react"],
+        filename: "App.jsx",
+      });
+      const blob = new Blob([code], { type: "text/javascript" });
+      const url = URL.createObjectURL(blob);
+      const { default: App } = await import(url);
+      const { createRoot } = await import("react-dom/client");
+      const React = await import("react");
+      createRoot(document.getElementById("root")).render(React.createElement(App));
+    </script>
+  </body>
+</html>
